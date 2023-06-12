@@ -115,8 +115,12 @@ const Lig = struct {
         }
         var parser = Parser.new(tokens.items, alloc);
         var expr = try parser.parse();
-        std.debug.print("{any}\n", .{tokens.items});
-        std.debug.print("{any}\n", .{expr});
+        if (expr) |e| {
+            try print_expr(e);
+            std.debug.print("\n", .{});
+        }
+        // std.debug.print("{any}\n", .{tokens.items});
+        // std.debug.print("{any}\n", .{expr});
     }
 
     fn report(self: *Self, line: usize, message: []const u8) void {
@@ -328,6 +332,20 @@ const TokenType = union(enum) {
     fn to_string(self: TokenType) []const u8 {
         // return type + " " + lexeme + " " + literal;
         switch (self) {
+            .Comma => return ",",
+            .Dot => return ".",
+            .Plus => return "+",
+            .Dash => return "-",
+            .Slash => return "/",
+            .Star => return "*",
+            .Bang => return "!",
+            .BangEqual => return "!=",
+            .DoubleEqual => return "==",
+            .Equal => return "=",
+            .Lt => return "<",
+            .Gt => return ">",
+            .Gte => return ">=",
+            .Lte => return "<=",
             else => unreachable,
         }
     }
@@ -401,13 +419,21 @@ const Parser = struct {
         };
     }
 
+    fn match_next(self: *Self, tokens: []const TokenType) bool {
+        if (self.tokens.len - 1 < self.curr) {
+            return false;
+        } else {
+            return self.tokens[self.curr].match(tokens);
+        }
+    }
+
     fn expression(self: *Self) anyerror!*Expr {
         return try self.equality();
     }
 
     fn equality(self: *Self) !*Expr {
         var left = try self.comparison();
-        while (self.tokens[self.curr].match(&[_]TokenType{ .BangEqual, .DoubleEqual })) {
+        while (self.match_next(&[_]TokenType{ .BangEqual, .DoubleEqual })) {
             var operator = self.tokens[self.curr];
 
             self.curr += 1;
@@ -425,7 +451,7 @@ const Parser = struct {
     fn comparison(self: *Self) !*Expr {
         var left = try self.term();
 
-        while (self.tokens[self.curr].match(&[_]TokenType{ .Gt, .Gte, .Lt, .Lte })) {
+        while (self.match_next(&[_]TokenType{ .Gt, .Gte, .Lt, .Lte })) {
             var operator = self.tokens[self.curr];
 
             self.curr += 1;
@@ -442,9 +468,11 @@ const Parser = struct {
 
     fn term(self: *Self) !*Expr {
         var expr = try self.factor();
+        // std.debug.print("expr term {any} {} {any}\n", .{ expr, self.match_next(&[_]TokenType{ .Dash, .Plus }), self.tokens[self.curr] });
 
-        while (self.tokens[self.curr].match(&[_]TokenType{ .Dash, .Plus })) {
+        while (self.match_next(&[_]TokenType{ .Dash, .Plus })) {
             var operator = self.tokens[self.curr];
+            // std.debug.print("operator {any} \n", .{operator});
 
             self.curr += 1;
 
@@ -461,7 +489,7 @@ const Parser = struct {
     fn factor(self: *Self) !*Expr {
         var expr = try self.unary();
 
-        while (self.tokens[self.curr].match(&[_]TokenType{ .Dash, .Plus })) {
+        while (self.match_next(&[_]TokenType{ .Slash, .Star })) {
             var operator = self.tokens[self.curr];
 
             self.curr += 1;
@@ -477,8 +505,8 @@ const Parser = struct {
     }
 
     fn unary(self: *Self) !*Expr {
-        var operator = self.tokens[self.curr];
-        if (operator.match(&[_]TokenType{ .Bang, .Dash })) {
+        if (self.match_next(&[_]TokenType{ .Bang, .Dash })) {
+            var operator = self.tokens[self.curr];
             var right = try self.unary();
 
             var stack_expr: Expr = .{ .Unary = .{ .operator = operator, .oparand = right } };
@@ -491,6 +519,11 @@ const Parser = struct {
     }
 
     fn primary(self: *Self) !*Expr {
+        if (self.tokens.len - 1 < self.curr) {
+            self.warn(self.tokens[self.curr - 2], "expected primary expression");
+            return LigErr.ExpectedPrimaryExpression;
+        }
+        // std.debug.print("primary {any}\n", .{self.tokens[self.curr]});
         var tok = self.tokens[self.curr];
         self.curr += 1;
         var expr = try self.alloc.create(Expr);
@@ -513,6 +546,7 @@ const Parser = struct {
                 expr.* = stack_group;
             },
             else => {
+                self.warn(tok, "expected primary expression");
                 return LigErr.ExpectedPrimaryExpression;
             },
         }
@@ -549,3 +583,35 @@ const Parser = struct {
 //                | primary ;
 // primary        → NUMBER | STRING | "true" | "false" | "nil"
 //                | "(" expression ")" ;
+
+fn print_expr(expr: *Expr) anyerror!void {
+    switch (expr.*) {
+        .Binary => |val| {
+            std.debug.print("(", .{});
+            try print_expr(val.left);
+            std.debug.print(" {s} ", .{val.operator.tok.to_string()});
+            try print_expr(val.right);
+            std.debug.print(")", .{});
+        },
+        .Unary => |val| {
+            std.debug.print("(", .{});
+            std.debug.print("{s} ", .{val.operator.tok.to_string()});
+            try print_expr(val.oparand);
+            std.debug.print(")", .{});
+        },
+        .Literal => |val| {
+            switch (val) {
+                .True => std.debug.print("true", .{}),
+                .False => std.debug.print("false", .{}),
+                .None => std.debug.print("none", .{}),
+                .String => |str| std.debug.print("{s}", .{str}),
+                .Number => |num| std.debug.print("{s}", .{num}),
+            }
+        },
+        .Group => |e| {
+            std.debug.print("(group ", .{});
+            try print_expr(e);
+            std.debug.print(")", .{});
+        },
+    }
+}
