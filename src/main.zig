@@ -45,8 +45,14 @@ pub fn main() !void {
 }
 
 const LigErr = error{
+    // lexing errors
     UnexpectedChar,
     UnterminatedString,
+
+    // parsing errors
+    UnexpectedEOF,
+    ExpectedPrimaryExpression,
+    ExpectedRightParen,
 };
 
 const Lig = struct {
@@ -102,9 +108,15 @@ const Lig = struct {
     fn run(_: *Self, code: []const u8, alloc: std.mem.Allocator) !void {
         var scanner = try Scanner.new(code, alloc);
 
+        var tokens = std.ArrayList(Token).init(alloc);
         while (try scanner.next()) |token| {
-            std.debug.print("{any}\n", .{token});
+            try tokens.append(token);
+            // std.debug.print("{any}\n", .{token});
         }
+        var parser = Parser.new(tokens.items, alloc);
+        var expr = try parser.parse();
+        std.debug.print("{any}\n", .{tokens.items});
+        std.debug.print("{any}\n", .{expr});
     }
 
     fn report(self: *Self, line: usize, message: []const u8) void {
@@ -215,7 +227,7 @@ const Scanner = struct {
                         else => break,
                     }
                 }
-                if (self.str[self.curr + len] == '.') {
+                if (self.str.len > self.curr + len and self.str[self.curr + len] == '.') {
                     var decimal = false;
                     while (self.str.len > self.curr + len + 1) {
                         switch (self.str[self.curr + len + 1]) {
@@ -231,7 +243,7 @@ const Scanner = struct {
                     }
                 }
                 t.tok = .{ .Number = self.str[self.curr - 1 .. self.curr + len] };
-                self.curr += len + 1;
+                self.curr += len;
             },
             'a'...'z', 'A'...'Z', '_' => {
                 self.curr -= 1;
@@ -246,7 +258,7 @@ const Scanner = struct {
                 }
                 const ident = self.str[self.curr .. self.curr + len];
                 t.tok = if (keywords.get(ident)) |tok| tok else .{ .Identifier = ident };
-                self.curr += len + 1;
+                self.curr += len;
             },
             else => return LigErr.UnexpectedChar,
         }
@@ -324,4 +336,216 @@ const TokenType = union(enum) {
 const Token = struct {
     tok: TokenType,
     line: u64,
+
+    fn match(self: *Token, others: []const TokenType) bool {
+        for (others) |typ| {
+            // std.testing.expectEqual
+            // return std.mem.allEqual(TokenType, &[_]TokenType{typ}, self.tok);
+            if (@as(std.meta.Tag(TokenType), self.tok) == typ) {
+                return true;
+            }
+            // if (self.tok == typ) {
+            //     return true;
+            // }
+        }
+        return false;
+    }
 };
+
+const Expr = union(enum) { Binary: struct {
+    left: *Expr,
+    operator: Token,
+    right: *Expr,
+}, Unary: struct {
+    operator: Token,
+    oparand: *Expr,
+}, Literal: Literal, Group: *Expr };
+
+const Literal = union(enum) {
+    True,
+    False,
+    None,
+    Number: []const u8,
+    String: []const u8,
+};
+
+const Parser = struct {
+    const Self = @This();
+    tokens: []Token,
+    alloc: std.mem.Allocator,
+    curr: usize,
+
+    fn new(tokens: []Token, alloc: std.mem.Allocator) Self {
+        return .{
+            .tokens = tokens,
+            .alloc = alloc,
+            .curr = 0,
+        };
+    }
+
+    // nom nom eat the character
+    fn nom(self: *Self) !void {
+        if (self.tokens.len > self.curr - 1) {
+            self.curr += 1;
+        } else {
+            return LigErr.UnexpectedEOF;
+        }
+    }
+
+    fn parse(self: *Self) !?*Expr {
+        return self.expression() catch |e| {
+            switch (e) {
+                error.UnexpectedEOF, error.ExpectedPrimaryExpression, error.ExpectedRightParen => return null,
+                else => return e,
+            }
+        };
+    }
+
+    fn expression(self: *Self) anyerror!*Expr {
+        return try self.equality();
+    }
+
+    fn equality(self: *Self) !*Expr {
+        var left = try self.comparison();
+        while (self.tokens[self.curr].match(&[_]TokenType{ .BangEqual, .DoubleEqual })) {
+            var operator = self.tokens[self.curr];
+
+            self.curr += 1;
+            // try self.nom();
+
+            var right = try self.comparison();
+            var stack_left = .{ .Binary = .{ .left = left, .operator = operator, .right = right } };
+            left = try self.alloc.create(Expr);
+            left.* = stack_left;
+        }
+
+        return left;
+    }
+
+    fn comparison(self: *Self) !*Expr {
+        var left = try self.term();
+
+        while (self.tokens[self.curr].match(&[_]TokenType{ .Gt, .Gte, .Lt, .Lte })) {
+            var operator = self.tokens[self.curr];
+
+            self.curr += 1;
+
+            var right = try self.term();
+
+            var stack_left = .{ .Binary = .{ .left = left, .operator = operator, .right = right } };
+            left = try self.alloc.create(Expr);
+            left.* = stack_left;
+        }
+
+        return left;
+    }
+
+    fn term(self: *Self) !*Expr {
+        var expr = try self.factor();
+
+        while (self.tokens[self.curr].match(&[_]TokenType{ .Dash, .Plus })) {
+            var operator = self.tokens[self.curr];
+
+            self.curr += 1;
+
+            var right = try self.factor();
+
+            var stack_left = .{ .Binary = .{ .left = expr, .operator = operator, .right = right } };
+            expr = try self.alloc.create(Expr);
+            expr.* = stack_left;
+        }
+
+        return expr;
+    }
+
+    fn factor(self: *Self) !*Expr {
+        var expr = try self.unary();
+
+        while (self.tokens[self.curr].match(&[_]TokenType{ .Dash, .Plus })) {
+            var operator = self.tokens[self.curr];
+
+            self.curr += 1;
+
+            var right = try self.unary();
+
+            var stack_left: Expr = .{ .Binary = .{ .left = expr, .operator = operator, .right = right } };
+            expr = try self.alloc.create(Expr);
+            expr.* = stack_left;
+        }
+
+        return expr;
+    }
+
+    fn unary(self: *Self) !*Expr {
+        var operator = self.tokens[self.curr];
+        if (operator.match(&[_]TokenType{ .Bang, .Dash })) {
+            var right = try self.unary();
+
+            var stack_expr: Expr = .{ .Unary = .{ .operator = operator, .oparand = right } };
+            var expr = try self.alloc.create(Expr);
+            expr.* = stack_expr;
+            return expr;
+        } else {
+            return try self.primary();
+        }
+    }
+
+    fn primary(self: *Self) !*Expr {
+        var tok = self.tokens[self.curr];
+        self.curr += 1;
+        var expr = try self.alloc.create(Expr);
+        switch (tok.tok) {
+            .False => expr.* = .{ .Literal = .False },
+            .True => expr.* = .{ .Literal = .True },
+            .None => expr.* = .{ .Literal = .None },
+            .Number => |num| expr.* = .{ .Literal = .{ .Number = num } },
+            .String => |str| expr.* = .{ .Literal = .{ .String = str } },
+            .LeftParen => {
+                expr = try self.expression();
+                if (self.tokens[self.curr].tok == .RightParen) {
+                    self.curr += 1;
+                } else {
+                    self.warn(tok, "expected right paren");
+                    return LigErr.ExpectedRightParen;
+                }
+                var stack_group: Expr = .{ .Group = expr };
+                expr = try self.alloc.create(Expr);
+                expr.* = stack_group;
+            },
+            else => {
+                return LigErr.ExpectedPrimaryExpression;
+            },
+        }
+        return expr;
+    }
+
+    fn warn(_: *Self, tok: Token, message: []const u8) void {
+        std.log.warn("{} at '{any}' {s}\n", .{ tok.line, tok.tok, message });
+    }
+
+    fn synchronise(self: *Self) void {
+        while (self.tokens.len > self.curr + 1) {
+            switch (self.tokens[self.curr]) {
+                .Class, .Fn, .Let, .For, .If, .While, .Print, .Return => {
+                    return;
+                },
+                .Semicolon => {
+                    self.curr += 1;
+                    return;
+                },
+                else => {},
+            }
+            self.curr += 1;
+        }
+    }
+};
+
+// expression     → equality ;
+// equality       → comparison ( ( "!=" | "==" ) comparison )* ;
+// comparison     → term ( ( ">" | ">=" | "<" | "<=" ) term )* ;
+// term           → factor ( ( "-" | "+" ) factor )* ;
+// factor         → unary ( ( "/" | "*" ) unary )* ;
+// unary          → ( "!" | "-" ) unary
+//                | primary ;
+// primary        → NUMBER | STRING | "true" | "false" | "nil"
+//                | "(" expression ")" ;
