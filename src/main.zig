@@ -60,6 +60,7 @@ const LigErr = error{
     BadMultiplication,
     BadDivision,
     BadNegation,
+    BadComparison,
 };
 
 const Lig = struct {
@@ -682,6 +683,54 @@ fn eval_expr(expr: *Expr) anyerror!Value {
                         }
                     }
                     return LigErr.BadDivision;
+                },
+                .Gt => {
+                    if (v1.as_num()) |n1| {
+                        if (v2.as_num()) |n2| {
+                            return .{ .Bool = n1 > n2 };
+                        }
+                    }
+                    return LigErr.BadComparison;
+                },
+                .Gte => {
+                    if (v1.as_num()) |n1| {
+                        if (v2.as_num()) |n2| {
+                            return .{ .Bool = n1 >= n2 };
+                        }
+                    }
+                    return LigErr.BadComparison;
+                },
+                .Lt => {
+                    if (v1.as_num()) |n1| {
+                        if (v2.as_num()) |n2| {
+                            return .{ .Bool = n1 < n2 };
+                        }
+                    }
+                    return LigErr.BadComparison;
+                },
+                .Lte => {
+                    if (v1.as_num()) |n1| {
+                        if (v2.as_num()) |n2| {
+                            return .{ .Bool = n1 <= n2 };
+                        }
+                    }
+                    return LigErr.BadComparison;
+                },
+                .BangEqual => {
+                    if (v1.as_num()) |n1| {
+                        if (v2.as_num()) |n2| {
+                            return .{ .Bool = n1 != n2 };
+                        }
+                    }
+                    return LigErr.BadComparison;
+                },
+                .DoubleEqual => {
+                    if (v1.as_num()) |n1| {
+                        if (v2.as_num()) |n2| {
+                            return .{ .Bool = n1 == n2 };
+                        }
+                    }
+                    return LigErr.BadComparison;
                 },
                 else => unreachable,
             }
