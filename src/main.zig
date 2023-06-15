@@ -62,6 +62,8 @@ const LigErr = error{
     BadNegation,
     BadComparison,
     ExpectedSemicolon,
+    ExpectedVariableName,
+    UndefinedVariable,
 };
 
 const Lig = struct {
@@ -396,14 +398,20 @@ const Token = struct {
     }
 };
 
-const Expr = union(enum) { Binary: struct {
-    left: *Expr,
-    operator: Token,
-    right: *Expr,
-}, Unary: struct {
-    operator: Token,
-    oparand: *Expr,
-}, Literal: Literal, Group: *Expr };
+const Expr = union(enum) {
+    Literal: Literal,
+    Group: *Expr,
+    Variable: []const u8,
+    Binary: struct {
+        left: *Expr,
+        operator: Token,
+        right: *Expr,
+    },
+    Unary: struct {
+        operator: Token,
+        oparand: *Expr,
+    },
+};
 
 const Literal = union(enum) {
     True,
@@ -416,6 +424,10 @@ const Literal = union(enum) {
 const Stmt = union(enum) {
     Expr: *Expr,
     Print: *Expr,
+    Var: struct {
+        name: []const u8,
+        init_expr: ?*Expr,
+    },
 };
 
 const Parser = struct {
@@ -451,12 +463,7 @@ const Parser = struct {
         if (self.match_next(&[_]TokenType{.Eof})) {
             return null;
         }
-        return self.statement() catch |e| {
-            switch (e) {
-                error.ExpectedSemicolon, error.UnexpectedEOF, error.ExpectedPrimaryExpression, error.ExpectedRightParen => return null,
-                else => return e,
-            }
-        };
+        return try self.declaration();
     }
 
     fn match_next(self: *Self, tokens: []const TokenType) bool {
@@ -464,6 +471,51 @@ const Parser = struct {
             return false;
         } else {
             return self.tokens[self.curr].match(tokens);
+        }
+    }
+
+    fn declaration(self: *Self) !?*Stmt {
+        var stmt: anyerror!?*Stmt = undefined;
+        if (self.match_next(&[_]TokenType{.Let})) {
+            self.curr += 1;
+            stmt = self.var_declaration();
+        } else {
+            stmt = self.statement();
+        }
+        return stmt catch |e| {
+            switch (e) {
+                error.ExpectedSemicolon, error.UnexpectedEOF, error.ExpectedPrimaryExpression, error.ExpectedRightParen => return null,
+                else => return e,
+            }
+        };
+    }
+
+    fn var_declaration(self: *Self) !?*Stmt {
+        if (self.match_next(&[_]TokenType{.{ .Identifier = undefined }})) {
+            var tok = self.tokens[self.curr];
+            self.curr += 1;
+            var name: []const u8 = undefined;
+            switch (tok.tok) {
+                .Identifier => |str| name = str,
+                else => unreachable,
+            }
+
+            var init_expr: ?*Expr = null;
+            if (self.match_next(&[_]TokenType{.Equal})) {
+                self.curr += 1;
+                init_expr = try self.expression();
+            }
+
+            if (!self.match_next(&[_]TokenType{.Semicolon})) {
+                return error.ExpectedSemicolon;
+            }
+            self.curr += 1;
+
+            var stmt = try self.alloc.create(Stmt);
+            stmt.* = .{ .Var = .{ .name = name, .init_expr = init_expr } };
+            return stmt;
+        } else {
+            return error.ExpectedVariableName;
         }
     }
 
@@ -618,6 +670,7 @@ const Parser = struct {
                 expr = try self.alloc.create(Expr);
                 expr.* = stack_group;
             },
+            .Identifier => |name| expr.* = .{ .Variable = name },
             else => {
                 self.warn(tok, "expected primary expression");
                 return LigErr.ExpectedPrimaryExpression;
@@ -655,15 +708,19 @@ const Parser = struct {
 // unary          → ( "!" | "-" ) unary
 //                | primary ;
 // primary        → NUMBER | STRING | "true" | "false" | "nil"
-//                | "(" expression ")" ;
+//                | "(" expression ")"
+//                | IDENTIFIER ;
 
-// program        → statement* EOF ;
+// program        → declaration* EOF ;
+//
+// declaration    → varDecl | statement ;
 //
 // statement      → exprStmt
 //                | printStmt ;
 //
 // exprStmt       → expression ";" ;
 // printStmt      → "print" expression ";" ;
+// varDecl        → "var" IDENTIFIER ( "=" expression )? ";" ;
 
 const Printer = struct {
     const Self = @This();
@@ -677,6 +734,14 @@ const Printer = struct {
             },
             .Expr => |expr| {
                 try self.print_expr(expr);
+            },
+            .Var => |val| {
+                std.debug.print("(let {s}", .{val.name});
+                if (val.init_expr) |expr| {
+                    std.debug.print(" = ", .{});
+                    try self.print_expr(expr);
+                }
+                std.debug.print(")", .{});
             },
         }
         std.debug.print("\n", .{});
@@ -711,6 +776,9 @@ const Printer = struct {
                 try self.print_expr(e);
                 std.debug.print(")", .{});
             },
+            .Variable => |str| {
+                std.debug.print("(var {s})", .{str});
+            },
         }
     }
 };
@@ -736,18 +804,53 @@ const Value = union(enum) {
     }
 };
 
-const Interpreter = struct {
+const Environment = struct {
     const Self = @This();
-    alloc: std.mem.Allocator,
+    const ValueMap = std.StringHashMap(Value);
+
+    values: ValueMap,
 
     fn new(alloc: std.mem.Allocator) Self {
         return .{
-            .alloc = alloc,
+            .values = ValueMap.init(alloc),
         };
     }
 
     fn deinit(self: *Self) void {
-        _ = self;
+        self.values.deinit();
+    }
+
+    fn define(self: *Self, name: []const u8, val: Value) !void {
+        if (self.values.fetchRemove(name)) |kv| {
+            // TODO: deinit when needed
+            _ = kv;
+        }
+        try self.values.put(name, val);
+    }
+
+    fn get(self: *Self, name: []const u8) !Value {
+        if (self.values.get(name)) |val| {
+            return val;
+        } else {
+            return error.UndefinedVariable;
+        }
+    }
+};
+
+const Interpreter = struct {
+    const Self = @This();
+    alloc: std.mem.Allocator,
+    environment: Environment,
+
+    fn new(alloc: std.mem.Allocator) Self {
+        return .{
+            .alloc = alloc,
+            .environment = Environment.new(alloc),
+        };
+    }
+
+    fn deinit(self: *Self) void {
+        self.environment.deinit();
     }
 
     fn eval_expr(self: *Self, expr: *Expr) anyerror!Value {
@@ -873,6 +976,9 @@ const Interpreter = struct {
             .Group => |val| {
                 return self.eval_expr(val);
             },
+            .Variable => |name| {
+                return self.environment.get(name);
+            },
         }
     }
 
@@ -901,6 +1007,14 @@ const Interpreter = struct {
             },
             .Expr => |expr| {
                 _ = try self.eval_expr(expr);
+            },
+            .Var => |val| {
+                var value: Value = .None;
+                if (val.init_expr) |e| {
+                    value = try self.eval_expr(e);
+                }
+
+                try self.environment.define(val.name, value);
             },
         }
     }
