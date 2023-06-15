@@ -116,6 +116,7 @@ const Lig = struct {
 
     fn run(_: *Self, code: []const u8, alloc: std.mem.Allocator) !void {
         var scanner = try Scanner.new(code, alloc);
+        defer scanner.deinit();
 
         var tokens = std.ArrayList(Token).init(alloc);
         while (try scanner.next()) |token| {
@@ -124,12 +125,17 @@ const Lig = struct {
         }
         try tokens.append(.{ .tok = .Eof, .line = scanner.line });
 
-        var parser = Parser.new(tokens.items, alloc);
-        var stmt = try parser.parse();
+        var parser = Parser.new(tokens.toOwnedSlice(), alloc);
+        defer parser.deinit();
+
         var printer = Printer{};
+        _ = printer;
+
         var interpreter = Interpreter.new(alloc);
-        if (stmt) |s| {
-            try printer.print_stmt(s);
+        defer interpreter.deinit();
+
+        while (try parser.next_stmt()) |s| {
+            // try printer.print_stmt(s);
             interpreter.evaluate_stmt(s) catch |err| {
                 std.debug.print("{}\n", .{err});
             };
@@ -176,6 +182,11 @@ const Scanner = struct {
         try keywords.put("print", .Print);
 
         return .{ .start = 0, .curr = 0, .line = 1, .str = str };
+    }
+
+    fn deinit(self: *Self) void {
+        _ = self;
+        keywords.deinit();
     }
 
     fn next(self: *Self) !?Token {
@@ -413,12 +424,18 @@ const Parser = struct {
     alloc: std.mem.Allocator,
     curr: usize,
 
+    // tokens is assumed to be an owned slice
     fn new(tokens: []Token, alloc: std.mem.Allocator) Self {
         return .{
             .tokens = tokens,
             .alloc = alloc,
             .curr = 0,
         };
+    }
+
+    fn deinit(self: *Self) void {
+        self.alloc.free(self.tokens);
+        self.curr = 0;
     }
 
     // nom nom eat the character
@@ -430,7 +447,10 @@ const Parser = struct {
         }
     }
 
-    fn parse(self: *Self) !?*Stmt {
+    fn next_stmt(self: *Self) !?*Stmt {
+        if (self.match_next(&[_]TokenType{.Eof})) {
+            return null;
+        }
         return self.statement() catch |e| {
             switch (e) {
                 error.ExpectedSemicolon, error.UnexpectedEOF, error.ExpectedPrimaryExpression, error.ExpectedRightParen => return null,
@@ -726,13 +746,13 @@ const Interpreter = struct {
         };
     }
 
-    fn interpret(self: *Self, stmts: []*Stmt) !void {
-        for (stmts) |stmt| {
-            try self.evaluate_stmt(stmt);
-        }
+    fn deinit(self: *Self) void {
+        _ = self;
     }
 
     fn eval_expr(self: *Self, expr: *Expr) anyerror!Value {
+        defer self.alloc.destroy(expr);
+
         switch (expr.*) {
             .Binary => |val| {
                 var v1 = try self.eval_expr(val.left);
@@ -856,7 +876,10 @@ const Interpreter = struct {
         }
     }
 
+    // stmt is assumed to be owned
     fn evaluate_stmt(self: *Self, stmt: *Stmt) !void {
+        defer self.alloc.destroy(stmt);
+
         switch (stmt.*) {
             .Print => |expr| {
                 var val = try self.eval_expr(expr);
