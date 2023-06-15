@@ -126,7 +126,11 @@ const Lig = struct {
         if (expr) |e| {
             try print_expr(e);
             std.debug.print("\n", .{});
-            std.debug.print("evaluates to: {}\n", .{try eval_expr(e)});
+            if (eval_expr(e)) |res| {
+                std.debug.print("evaluates to: {}\n", .{res});
+            } else |err| {
+                std.debug.print("{}\n", .{err});
+            }
         }
         // std.debug.print("{any}\n", .{tokens.items});
         // std.debug.print("{any}\n", .{expr});
@@ -717,6 +721,7 @@ fn eval_expr(expr: *Expr) anyerror!Value {
                     return LigErr.BadComparison;
                 },
                 .BangEqual => {
+                    // TODO: support any type in == and !=
                     if (v1.as_num()) |n1| {
                         if (v2.as_num()) |n2| {
                             return .{ .Bool = n1 != n2 };
