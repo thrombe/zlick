@@ -520,6 +520,8 @@ const Parser = struct {
     fn unary(self: *Self) !*Expr {
         if (self.match_next(&[_]TokenType{ .Bang, .Dash })) {
             var operator = self.tokens[self.curr];
+            self.curr += 1;
+
             var right = try self.unary();
 
             var stack_expr: Expr = .{ .Unary = .{ .operator = operator, .oparand = right } };
