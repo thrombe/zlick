@@ -424,9 +424,13 @@ const Literal = union(enum) {
 const Stmt = union(enum) {
     Expr: *Expr,
     Print: *Expr,
-    Var: struct {
+    Let: struct {
         name: []const u8,
         init_expr: ?*Expr,
+    },
+    Assign: struct {
+        name: []const u8,
+        expr: *Expr,
     },
 };
 
@@ -474,6 +478,35 @@ const Parser = struct {
         }
     }
 
+    fn assignment_or_expr_stmt(self: *Self) !*Stmt {
+        var expr = try self.expression();
+
+        if (self.match_next(&[_]TokenType{.Equal})) {
+            self.curr += 1;
+
+            var right = try self.expression();
+            if (!self.match_next(&[_]TokenType{.Semicolon})) {
+                return error.ExpectedSemicolon;
+            }
+            self.curr += 1;
+
+            switch (expr.*) {
+                .Variable => |name| {
+                    var stack_stmt = .{ .Assign = .{ .name = name, .expr = right } };
+                    var stmt = try self.alloc.create(Stmt);
+                    stmt.* = stack_stmt;
+                    self.alloc.destroy(expr);
+                    return stmt;
+                },
+                else => return error.InvalidAssignmentTarget,
+            }
+        } else {
+            var stmt = try self.alloc.create(Stmt);
+            stmt.* = .{ .Expr = expr };
+            return stmt;
+        }
+    }
+
     fn declaration(self: *Self) !?*Stmt {
         var stmt: anyerror!?*Stmt = undefined;
         if (self.match_next(&[_]TokenType{.Let})) {
@@ -512,7 +545,7 @@ const Parser = struct {
             self.curr += 1;
 
             var stmt = try self.alloc.create(Stmt);
-            stmt.* = .{ .Var = .{ .name = name, .init_expr = init_expr } };
+            stmt.* = .{ .Let = .{ .name = name, .init_expr = init_expr } };
             return stmt;
         } else {
             return error.ExpectedVariableName;
@@ -524,7 +557,7 @@ const Parser = struct {
             self.curr += 1;
             return try self.print_stmt();
         } else {
-            return try self.expr_stmt();
+            return try self.assignment_or_expr_stmt();
         }
     }
 
@@ -539,16 +572,16 @@ const Parser = struct {
         return stmt;
     }
 
-    fn expr_stmt(self: *Self) !*Stmt {
-        var val = try self.expression();
-        if (!self.match_next(&[_]TokenType{.Semicolon})) {
-            return error.ExpectedSemicolon;
-        }
-        self.curr += 1;
-        var stmt = try self.alloc.create(Stmt);
-        stmt.* = .{ .Expr = val };
-        return stmt;
-    }
+    // fn expr_stmt(self: *Self) !*Stmt {
+    //     var val = try self.expression();
+    //     if (!self.match_next(&[_]TokenType{.Semicolon})) {
+    //         return error.ExpectedSemicolon;
+    //     }
+    //     self.curr += 1;
+    //     var stmt = try self.alloc.create(Stmt);
+    //     stmt.* = .{ .Expr = val };
+    //     return stmt;
+    // }
 
     fn expression(self: *Self) anyerror!*Expr {
         return try self.equality();
@@ -651,7 +684,10 @@ const Parser = struct {
         // std.debug.print("primary {any}\n", .{self.tokens[self.curr]});
         var tok = self.tokens[self.curr];
         self.curr += 1;
+
         var expr = try self.alloc.create(Expr);
+        errdefer self.alloc.destroy(expr);
+
         switch (tok.tok) {
             .False => expr.* = .{ .Literal = .False },
             .True => expr.* = .{ .Literal = .True },
@@ -735,12 +771,17 @@ const Printer = struct {
             .Expr => |expr| {
                 try self.print_expr(expr);
             },
-            .Var => |val| {
+            .Let => |val| {
                 std.debug.print("(let {s}", .{val.name});
                 if (val.init_expr) |expr| {
                     std.debug.print(" = ", .{});
                     try self.print_expr(expr);
                 }
+                std.debug.print(")", .{});
+            },
+            .Assign => |val| {
+                std.debug.print("({s} = ", .{val.name});
+                try self.print_expr(val.expr);
                 std.debug.print(")", .{});
             },
         }
@@ -831,6 +872,17 @@ const Environment = struct {
     fn get(self: *Self, name: []const u8) !Value {
         if (self.values.get(name)) |val| {
             return val;
+        } else {
+            return error.UndefinedVariable;
+        }
+    }
+
+    fn set(self: *Self, name: []const u8, val: Value) !void {
+        if (self.values.getPtr(name)) |e| {
+            // TODO: deallocate old value when required
+            // _ = val;
+            // _ = e;
+            e.* = val;
         } else {
             return error.UndefinedVariable;
         }
@@ -1008,13 +1060,17 @@ const Interpreter = struct {
             .Expr => |expr| {
                 _ = try self.eval_expr(expr);
             },
-            .Var => |val| {
+            .Let => |val| {
                 var value: Value = .None;
                 if (val.init_expr) |e| {
                     value = try self.eval_expr(e);
                 }
 
                 try self.environment.define(val.name, value);
+            },
+            .Assign => |val| {
+                var value = try self.eval_expr(val.expr);
+                try self.environment.set(val.name, value);
             },
         }
     }
