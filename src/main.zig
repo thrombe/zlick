@@ -500,10 +500,14 @@ const Parser = struct {
                 },
                 else => return error.InvalidAssignmentTarget,
             }
-        } else {
+        } else if (self.match_next(&[_]TokenType{.Semicolon})) {
+            self.curr += 1;
+
             var stmt = try self.alloc.create(Stmt);
             stmt.* = .{ .Expr = expr };
             return stmt;
+        } else {
+            return error.ExpectedSemicolon;
         }
     }
 
@@ -712,6 +716,7 @@ const Parser = struct {
                 return LigErr.ExpectedPrimaryExpression;
             },
         }
+        // std.debug.print("{any} {*} {any}\n", .{ tok.tok, expr, expr });
         return expr;
     }
 
