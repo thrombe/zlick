@@ -61,6 +61,7 @@ const LigErr = error{
     BadDivision,
     BadNegation,
     BadComparison,
+    ExpectedSemicolon,
 };
 
 const Lig = struct {
@@ -121,16 +122,17 @@ const Lig = struct {
             try tokens.append(token);
             // std.debug.print("{any}\n", .{token});
         }
+        try tokens.append(.{ .tok = .Eof, .line = scanner.line });
+
         var parser = Parser.new(tokens.items, alloc);
-        var expr = try parser.parse();
-        if (expr) |e| {
-            try print_expr(e);
-            std.debug.print("\n", .{});
-            if (eval_expr(e)) |res| {
-                std.debug.print("evaluates to: {}\n", .{res});
-            } else |err| {
+        var stmt = try parser.parse();
+        var printer = Printer{};
+        var interpreter = Interpreter.new(alloc);
+        if (stmt) |s| {
+            try printer.print_stmt(s);
+            interpreter.evaluate_stmt(s) catch |err| {
                 std.debug.print("{}\n", .{err});
-            }
+            };
         }
         // std.debug.print("{any}\n", .{tokens.items});
         // std.debug.print("{any}\n", .{expr});
@@ -400,6 +402,11 @@ const Literal = union(enum) {
     String: []const u8,
 };
 
+const Stmt = union(enum) {
+    Expr: *Expr,
+    Print: *Expr,
+};
+
 const Parser = struct {
     const Self = @This();
     tokens: []Token,
@@ -423,10 +430,10 @@ const Parser = struct {
         }
     }
 
-    fn parse(self: *Self) !?*Expr {
-        return self.expression() catch |e| {
+    fn parse(self: *Self) !?*Stmt {
+        return self.statement() catch |e| {
             switch (e) {
-                error.UnexpectedEOF, error.ExpectedPrimaryExpression, error.ExpectedRightParen => return null,
+                error.ExpectedSemicolon, error.UnexpectedEOF, error.ExpectedPrimaryExpression, error.ExpectedRightParen => return null,
                 else => return e,
             }
         };
@@ -438,6 +445,37 @@ const Parser = struct {
         } else {
             return self.tokens[self.curr].match(tokens);
         }
+    }
+
+    fn statement(self: *Self) anyerror!*Stmt {
+        if (self.match_next(&[_]TokenType{.Print})) {
+            self.curr += 1;
+            return try self.print_stmt();
+        } else {
+            return try self.expr_stmt();
+        }
+    }
+
+    fn print_stmt(self: *Self) !*Stmt {
+        var val = try self.expression();
+        if (!self.match_next(&[_]TokenType{.Semicolon})) {
+            return error.ExpectedSemicolon;
+        }
+        self.curr += 1;
+        var stmt = try self.alloc.create(Stmt);
+        stmt.* = .{ .Print = val };
+        return stmt;
+    }
+
+    fn expr_stmt(self: *Self) !*Stmt {
+        var val = try self.expression();
+        if (!self.match_next(&[_]TokenType{.Semicolon})) {
+            return error.ExpectedSemicolon;
+        }
+        self.curr += 1;
+        var stmt = try self.alloc.create(Stmt);
+        stmt.* = .{ .Expr = val };
+        return stmt;
     }
 
     fn expression(self: *Self) anyerror!*Expr {
@@ -599,37 +637,63 @@ const Parser = struct {
 // primary        → NUMBER | STRING | "true" | "false" | "nil"
 //                | "(" expression ")" ;
 
-fn print_expr(expr: *Expr) anyerror!void {
-    switch (expr.*) {
-        .Binary => |val| {
-            std.debug.print("(", .{});
-            try print_expr(val.left);
-            std.debug.print(" {s} ", .{val.operator.tok.to_string()});
-            try print_expr(val.right);
-            std.debug.print(")", .{});
-        },
-        .Unary => |val| {
-            std.debug.print("(", .{});
-            std.debug.print("{s} ", .{val.operator.tok.to_string()});
-            try print_expr(val.oparand);
-            std.debug.print(")", .{});
-        },
-        .Literal => |val| {
-            switch (val) {
-                .True => std.debug.print("true", .{}),
-                .False => std.debug.print("false", .{}),
-                .None => std.debug.print("none", .{}),
-                .String => |str| std.debug.print("{s}", .{str}),
-                .Number => |num| std.debug.print("{s}", .{num}),
-            }
-        },
-        .Group => |e| {
-            std.debug.print("(group ", .{});
-            try print_expr(e);
-            std.debug.print(")", .{});
-        },
+// program        → statement* EOF ;
+//
+// statement      → exprStmt
+//                | printStmt ;
+//
+// exprStmt       → expression ";" ;
+// printStmt      → "print" expression ";" ;
+
+const Printer = struct {
+    const Self = @This();
+    // TODO: no debug.print
+
+    fn print_stmt(self: *Self, stmt: *Stmt) anyerror!void {
+        switch (stmt.*) {
+            .Print => |expr| {
+                std.debug.print("print ", .{});
+                try self.print_expr(expr);
+            },
+            .Expr => |expr| {
+                try self.print_expr(expr);
+            },
+        }
+        std.debug.print("\n", .{});
     }
-}
+
+    fn print_expr(self: *Self, expr: *Expr) anyerror!void {
+        switch (expr.*) {
+            .Binary => |val| {
+                std.debug.print("(", .{});
+                try self.print_expr(val.left);
+                std.debug.print(" {s} ", .{val.operator.tok.to_string()});
+                try self.print_expr(val.right);
+                std.debug.print(")", .{});
+            },
+            .Unary => |val| {
+                std.debug.print("(", .{});
+                std.debug.print("{s} ", .{val.operator.tok.to_string()});
+                try self.print_expr(val.oparand);
+                std.debug.print(")", .{});
+            },
+            .Literal => |val| {
+                switch (val) {
+                    .True => std.debug.print("true", .{}),
+                    .False => std.debug.print("false", .{}),
+                    .None => std.debug.print("none", .{}),
+                    .String => |str| std.debug.print("{s}", .{str}),
+                    .Number => |num| std.debug.print("{s}", .{num}),
+                }
+            },
+            .Group => |e| {
+                std.debug.print("(group ", .{});
+                try self.print_expr(e);
+                std.debug.print(")", .{});
+            },
+        }
+    }
+};
 
 const Value = union(enum) {
     String: []const u8,
@@ -652,126 +716,169 @@ const Value = union(enum) {
     }
 };
 
-fn eval_expr(expr: *Expr) anyerror!Value {
-    switch (expr.*) {
-        .Binary => |val| {
-            var v1 = try eval_expr(val.left);
-            var v2 = try eval_expr(val.right);
-            switch (val.operator.tok) {
-                .Plus => {
-                    if (v1.as_num()) |n1| {
-                        if (v2.as_num()) |n2| {
-                            return .{ .Number = n1 + n2 };
-                        }
-                    }
-                    return LigErr.BadAddition;
-                },
-                .Dash => {
-                    if (v1.as_num()) |n1| {
-                        if (v2.as_num()) |n2| {
-                            return .{ .Number = n1 - n2 };
-                        }
-                    }
-                    return LigErr.BadSubtraction;
-                },
-                .Star => {
-                    if (v1.as_num()) |n1| {
-                        if (v2.as_num()) |n2| {
-                            return .{ .Number = n1 * n2 };
-                        }
-                    }
-                    return LigErr.BadMultiplication;
-                },
-                .Slash => {
-                    if (v1.as_num()) |n1| {
-                        if (v2.as_num()) |n2| {
-                            return .{ .Number = n1 / n2 };
-                        }
-                    }
-                    return LigErr.BadDivision;
-                },
-                .Gt => {
-                    if (v1.as_num()) |n1| {
-                        if (v2.as_num()) |n2| {
-                            return .{ .Bool = n1 > n2 };
-                        }
-                    }
-                    return LigErr.BadComparison;
-                },
-                .Gte => {
-                    if (v1.as_num()) |n1| {
-                        if (v2.as_num()) |n2| {
-                            return .{ .Bool = n1 >= n2 };
-                        }
-                    }
-                    return LigErr.BadComparison;
-                },
-                .Lt => {
-                    if (v1.as_num()) |n1| {
-                        if (v2.as_num()) |n2| {
-                            return .{ .Bool = n1 < n2 };
-                        }
-                    }
-                    return LigErr.BadComparison;
-                },
-                .Lte => {
-                    if (v1.as_num()) |n1| {
-                        if (v2.as_num()) |n2| {
-                            return .{ .Bool = n1 <= n2 };
-                        }
-                    }
-                    return LigErr.BadComparison;
-                },
-                .BangEqual => {
-                    // TODO: support any type in == and !=
-                    if (v1.as_num()) |n1| {
-                        if (v2.as_num()) |n2| {
-                            return .{ .Bool = n1 != n2 };
-                        }
-                    }
-                    return LigErr.BadComparison;
-                },
-                .DoubleEqual => {
-                    if (v1.as_num()) |n1| {
-                        if (v2.as_num()) |n2| {
-                            return .{ .Bool = n1 == n2 };
-                        }
-                    }
-                    return LigErr.BadComparison;
-                },
-                else => unreachable,
-            }
-        },
-        .Unary => |val| {
-            var v = try eval_expr(val.oparand);
-            switch (val.operator.tok) {
-                .Bang => {
-                    if (v.as_bool()) |b| {
-                        return .{ .Bool = !b };
-                    }
-                    return LigErr.BadNegation;
-                },
-                .Dash => {
-                    if (v.as_num()) |n| {
-                        return .{ .Number = -n };
-                    } else {
-                        return LigErr.BadNegation;
-                    }
-                },
-                else => unreachable,
-            }
-        },
-        .Literal => |val| {
-            switch (val) {
-                .String => |str| return .{ .String = str },
-                .Number => |num| return .{ .Number = try std.fmt.parseFloat(f64, num) },
-                .None => return .None,
-                .True => return .{ .Bool = true },
-                .False => return .{ .Bool = false },
-            }
-        },
-        .Group => |val| {
-            return eval_expr(val);
-        },
+const Interpreter = struct {
+    const Self = @This();
+    alloc: std.mem.Allocator,
+
+    fn new(alloc: std.mem.Allocator) Self {
+        return .{
+            .alloc = alloc,
+        };
     }
-}
+
+    fn interpret(self: *Self, stmts: []*Stmt) !void {
+        for (stmts) |stmt| {
+            try self.evaluate_stmt(stmt);
+        }
+    }
+
+    fn eval_expr(self: *Self, expr: *Expr) anyerror!Value {
+        switch (expr.*) {
+            .Binary => |val| {
+                var v1 = try self.eval_expr(val.left);
+                var v2 = try self.eval_expr(val.right);
+                switch (val.operator.tok) {
+                    .Plus => {
+                        if (v1.as_num()) |n1| {
+                            if (v2.as_num()) |n2| {
+                                return .{ .Number = n1 + n2 };
+                            }
+                        }
+                        return LigErr.BadAddition;
+                    },
+                    .Dash => {
+                        if (v1.as_num()) |n1| {
+                            if (v2.as_num()) |n2| {
+                                return .{ .Number = n1 - n2 };
+                            }
+                        }
+                        return LigErr.BadSubtraction;
+                    },
+                    .Star => {
+                        if (v1.as_num()) |n1| {
+                            if (v2.as_num()) |n2| {
+                                return .{ .Number = n1 * n2 };
+                            }
+                        }
+                        return LigErr.BadMultiplication;
+                    },
+                    .Slash => {
+                        if (v1.as_num()) |n1| {
+                            if (v2.as_num()) |n2| {
+                                return .{ .Number = n1 / n2 };
+                            }
+                        }
+                        return LigErr.BadDivision;
+                    },
+                    .Gt => {
+                        if (v1.as_num()) |n1| {
+                            if (v2.as_num()) |n2| {
+                                return .{ .Bool = n1 > n2 };
+                            }
+                        }
+                        return LigErr.BadComparison;
+                    },
+                    .Gte => {
+                        if (v1.as_num()) |n1| {
+                            if (v2.as_num()) |n2| {
+                                return .{ .Bool = n1 >= n2 };
+                            }
+                        }
+                        return LigErr.BadComparison;
+                    },
+                    .Lt => {
+                        if (v1.as_num()) |n1| {
+                            if (v2.as_num()) |n2| {
+                                return .{ .Bool = n1 < n2 };
+                            }
+                        }
+                        return LigErr.BadComparison;
+                    },
+                    .Lte => {
+                        if (v1.as_num()) |n1| {
+                            if (v2.as_num()) |n2| {
+                                return .{ .Bool = n1 <= n2 };
+                            }
+                        }
+                        return LigErr.BadComparison;
+                    },
+                    .BangEqual => {
+                        // TODO: support any type in == and !=
+                        if (v1.as_num()) |n1| {
+                            if (v2.as_num()) |n2| {
+                                return .{ .Bool = n1 != n2 };
+                            }
+                        }
+                        return LigErr.BadComparison;
+                    },
+                    .DoubleEqual => {
+                        if (v1.as_num()) |n1| {
+                            if (v2.as_num()) |n2| {
+                                return .{ .Bool = n1 == n2 };
+                            }
+                        }
+                        return LigErr.BadComparison;
+                    },
+                    else => unreachable,
+                }
+            },
+            .Unary => |val| {
+                var v = try self.eval_expr(val.oparand);
+                switch (val.operator.tok) {
+                    .Bang => {
+                        if (v.as_bool()) |b| {
+                            return .{ .Bool = !b };
+                        }
+                        return LigErr.BadNegation;
+                    },
+                    .Dash => {
+                        if (v.as_num()) |n| {
+                            return .{ .Number = -n };
+                        } else {
+                            return LigErr.BadNegation;
+                        }
+                    },
+                    else => unreachable,
+                }
+            },
+            .Literal => |val| {
+                switch (val) {
+                    .String => |str| return .{ .String = str },
+                    .Number => |num| return .{ .Number = try std.fmt.parseFloat(f64, num) },
+                    .None => return .None,
+                    .True => return .{ .Bool = true },
+                    .False => return .{ .Bool = false },
+                }
+            },
+            .Group => |val| {
+                return self.eval_expr(val);
+            },
+        }
+    }
+
+    fn evaluate_stmt(self: *Self, stmt: *Stmt) !void {
+        switch (stmt.*) {
+            .Print => |expr| {
+                var val = try self.eval_expr(expr);
+                switch (val) {
+                    .String => |str| {
+                        std.debug.print("{s}", .{str});
+                    },
+                    .Number => |num| {
+                        std.debug.print("{}", .{num});
+                    },
+                    .Bool => |b| {
+                        std.debug.print("{}", .{b});
+                    },
+                    .None => {
+                        std.debug.print("None", .{});
+                    },
+                }
+                std.debug.print("\n", .{});
+            },
+            .Expr => |expr| {
+                _ = try self.eval_expr(expr);
+            },
+        }
+    }
+};
