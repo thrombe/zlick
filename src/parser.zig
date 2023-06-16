@@ -56,6 +56,7 @@ pub const Stmt = union(enum) {
         name: []const u8,
         expr: *Expr,
     },
+    Block: []*Stmt,
 };
 
 pub const Parser = struct {
@@ -91,7 +92,12 @@ pub const Parser = struct {
         if (self.match_next(&[_]TokenType{.Eof})) {
             return null;
         }
-        return try self.declaration();
+        return self.declaration() catch |e| {
+            switch (e) {
+                error.ExpectedSemicolon, error.UnexpectedEOF, error.ExpectedPrimaryExpression, error.ExpectedRightParen => return null,
+                else => return e,
+            }
+        };
     }
 
     fn match_next(self: *Self, tokens: []const TokenType) bool {
@@ -135,23 +141,18 @@ pub const Parser = struct {
         }
     }
 
-    fn declaration(self: *Self) !?*Stmt {
-        var stmt: anyerror!?*Stmt = undefined;
+    fn declaration(self: *Self) !*Stmt {
+        var stmt: anyerror!*Stmt = undefined;
         if (self.match_next(&[_]TokenType{.Let})) {
             self.curr += 1;
-            stmt = self.var_declaration();
+            stmt = try self.var_declaration();
         } else {
-            stmt = self.statement();
+            stmt = try self.statement();
         }
-        return stmt catch |e| {
-            switch (e) {
-                error.ExpectedSemicolon, error.UnexpectedEOF, error.ExpectedPrimaryExpression, error.ExpectedRightParen => return null,
-                else => return e,
-            }
-        };
+        return stmt;
     }
 
-    fn var_declaration(self: *Self) !?*Stmt {
+    fn var_declaration(self: *Self) !*Stmt {
         if (self.match_next(&[_]TokenType{.{ .Identifier = undefined }})) {
             var tok = self.tokens[self.curr];
             self.curr += 1;
@@ -184,9 +185,29 @@ pub const Parser = struct {
         if (self.match_next(&[_]TokenType{.Print})) {
             self.curr += 1;
             return try self.print_stmt();
+        } else if (self.match_next(&[_]TokenType{.LeftBrace})) {
+            self.curr += 1;
+
+            var stmts = try self.block();
+            var stmt = try self.alloc.create(Stmt);
+            stmt.* = .{ .Block = stmts };
+            return stmt;
         } else {
             return try self.assignment_or_expr_stmt();
         }
+    }
+
+    fn block(self: *Self) ![]*Stmt {
+        var stmts = std.ArrayList(*Stmt).init(self.alloc);
+        while (!self.match_next(&[_]TokenType{ .RightBrace, .Eof })) {
+            try stmts.append(try self.declaration());
+        }
+        if (!self.match_next(&[_]TokenType{.RightBrace})) {
+            return error.UnexpectedEOF;
+        }
+        self.curr += 1;
+
+        return stmts.toOwnedSlice();
     }
 
     fn print_stmt(self: *Self) !*Stmt {
@@ -381,8 +402,10 @@ pub const Parser = struct {
 // declaration    → varDecl | statement ;
 //
 // statement      → exprStmt
-//                | printStmt ;
+//                | printStmt
+//                | block ;
 //
+// block          → "{" declaration* "}" ;
 // exprStmt       → expression ";" ;
 // printStmt      → "print" expression ";" ;
 // varDecl        → "var" IDENTIFIER ( "=" expression )? ";" ;

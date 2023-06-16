@@ -29,6 +29,13 @@ pub const Printer = struct {
                 try self.print_expr(val.expr);
                 std.debug.print(")", .{});
             },
+            .Block => |stmts| {
+                std.debug.print("{{ (block)\n", .{});
+                for (stmts) |s| {
+                    try self.print_stmt(s);
+                }
+                std.debug.print("}}", .{});
+            },
         }
         std.debug.print("\n", .{});
     }

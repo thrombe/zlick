@@ -207,7 +207,7 @@ pub const TokenType = union(enum) {
 
     Eof,
 
-    fn to_string(self: TokenType) []const u8 {
+    pub fn to_string(self: TokenType) []const u8 {
         // return type + " " + lexeme + " " + literal;
         switch (self) {
             .Comma => return ",",

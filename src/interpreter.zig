@@ -31,11 +31,19 @@ pub const Environment = struct {
     const ValueMap = std.StringHashMap(Value);
 
     values: ValueMap,
+    super: ?*Self,
 
     pub fn new(alloc: std.mem.Allocator) Self {
         return .{
             .values = ValueMap.init(alloc),
+            .super = null,
         };
+    }
+
+    pub fn enclosed(self: *Self) !Self {
+        var alloc = self.values.allocator;
+        var env = .{ .values = ValueMap.init(alloc), .super = self };
+        return env;
     }
 
     pub fn deinit(self: *Self) void {
@@ -54,7 +62,11 @@ pub const Environment = struct {
         if (self.values.get(name)) |val| {
             return val;
         } else {
-            return error.UndefinedVariable;
+            if (self.super) |super| {
+                return super.get(name);
+            } else {
+                return error.UndefinedVariable;
+            }
         }
     }
 
@@ -65,7 +77,11 @@ pub const Environment = struct {
             // _ = e;
             e.* = val;
         } else {
-            return error.UndefinedVariable;
+            if (self.super) |super| {
+                return super.set(name, val);
+            } else {
+                return error.UndefinedVariable;
+            }
         }
     }
 };
@@ -252,6 +268,21 @@ pub const Interpreter = struct {
             .Assign => |val| {
                 var value = try self.eval_expr(val.expr);
                 try self.environment.set(val.name, value);
+            },
+            .Block => |stmts| {
+                defer self.alloc.free(stmts);
+                // TODO: errdefer destroy all statements
+
+                var prev = self.environment;
+                self.environment = try prev.enclosed();
+                defer {
+                    self.environment.deinit();
+                    self.environment = prev;
+                }
+
+                for (stmts) |s| {
+                    try self.evaluate_stmt(s);
+                }
             },
         }
     }
