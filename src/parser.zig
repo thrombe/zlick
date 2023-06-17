@@ -61,6 +61,10 @@ pub const Stmt = union(enum) {
         if_block: *Stmt,
         else_block: ?*Stmt,
     },
+    While: struct {
+        condition: *Expr,
+        block: *Stmt,
+    },
     Block: []*Stmt,
 };
 
@@ -234,6 +238,23 @@ pub const Parser = struct {
                 stmt.* = .{ .If = .{ .condition = condition, .if_block = if_block, .else_block = null } };
                 return stmt;
             }
+        } else if (self.match_next(&[_]TokenType{.While})) {
+            self.curr += 1;
+
+            var condition = try self.expression();
+
+            if (!self.match_next(&[_]TokenType{.LeftBrace})) {
+                return error.ExpectedLeftBrace;
+            }
+            self.curr += 1;
+
+            var stmts = try self.block();
+            var blk = try self.alloc.create(Stmt);
+            blk.* = .{ .Block = stmts };
+
+            var while_stmt = try self.alloc.create(Stmt);
+            while_stmt.* = .{ .While = .{ .condition = condition, .block = blk } };
+            return while_stmt;
         } else {
             return try self.assignment_or_expr_stmt();
         }
@@ -478,12 +499,13 @@ pub const Parser = struct {
 // declaration    → varDecl | statement ;
 //
 // statement      → exprStmt
-//                | printStmt | ifStatement
+//                | printStmt | ifStatement | whileStament
 //                | block ;
 //
 // block          → "{" declaration* "}" ;
 // exprStmt       → expression ";" ;
 // ifStatemtnt    → "if" expression block ( "else" (ifStatement | block) )? ;
+// whileStatement → "while" expression block ;
 // printStmt      → "print" expression ";" ;
 // varDecl        → "var" IDENTIFIER ( "=" expression )? ";" ;
 

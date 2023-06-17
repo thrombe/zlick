@@ -321,6 +321,20 @@ pub const Interpreter = struct {
                     else => return error.ExpectedBooleanExpression,
                 }
             },
+            .While => |val| {
+                while (true) {
+                    var condition = try self.eval_expr(val.condition);
+                    if (condition.as_bool()) |b| {
+                        if (b) {
+                            try self.evaluate_stmt(val.block);
+                        } else {
+                            break;
+                        }
+                    } else {
+                        return error.ExpectedBooleanExpression;
+                    }
+                }
+            },
         }
     }
 
@@ -373,6 +387,10 @@ pub const Interpreter = struct {
                 if (v.else_block) |b| {
                     self.freeall_stmt(b);
                 }
+            },
+            .While => |v| {
+                self.freeall_expr(v.condition);
+                self.freeall_stmt(v.block);
             },
         }
     }
