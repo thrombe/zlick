@@ -275,7 +275,39 @@ pub const Parser = struct {
     // }
 
     fn expression(self: *Self) anyerror!*Expr {
-        return try self.equality();
+        return try self.logic_or();
+    }
+
+    fn logic_or(self: *Self) anyerror!*Expr {
+        var expr = try self.logic_and();
+
+        if (self.match_next(&[_]TokenType{.Or})) {
+            var operator = self.tokens[self.curr];
+            self.curr += 1;
+
+            var right = try self.logic_or();
+            var stack_expr = .{ .Binary = .{ .left = expr, .operator = operator, .right = right } };
+            expr = try self.alloc.create(Expr);
+            expr.* = stack_expr;
+        }
+
+        return expr;
+    }
+
+    fn logic_and(self: *Self) anyerror!*Expr {
+        var expr = try self.equality();
+
+        if (self.match_next(&[_]TokenType{.And})) {
+            var operator = self.tokens[self.curr];
+            self.curr += 1;
+
+            var right = try self.logic_and();
+            var stack_expr = .{ .Binary = .{ .left = expr, .operator = operator, .right = right } };
+            expr = try self.alloc.create(Expr);
+            expr.* = stack_expr;
+        }
+
+        return expr;
     }
 
     fn equality(self: *Self) !*Expr {
@@ -428,7 +460,9 @@ pub const Parser = struct {
     }
 };
 
-// expression     → equality ;
+// expression     → logic_or ;
+// logic_or       → logic_and ( "or" logic_or )? ;
+// logic_and      → equality ( "and" logical_and )? ;
 // equality       → comparison ( ( "!=" | "==" ) comparison )* ;
 // comparison     → term ( ( ">" | ">=" | "<" | "<=" ) term )* ;
 // term           → factor ( ( "-" | "+" ) factor )* ;

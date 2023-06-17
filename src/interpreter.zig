@@ -105,6 +105,37 @@ pub const Interpreter = struct {
     fn eval_expr(self: *Self, expr: *Expr) anyerror!Value {
         switch (expr.*) {
             .Binary => |val| {
+                switch (val.operator.tok) {
+                    .And => {
+                        var v1 = try self.eval_expr(val.left);
+                        if (v1.as_bool()) |b1| {
+                            if (!b1) {
+                                return .{ .Bool = false };
+                            } else {
+                                var v2 = try self.eval_expr(val.right);
+                                if (v2.as_bool()) |b2| {
+                                    return .{ .Bool = b2 };
+                                }
+                            }
+                        }
+                        return LigErr.ExpectedBooleanExpression;
+                    },
+                    .Or => {
+                        var v1 = try self.eval_expr(val.left);
+                        if (v1.as_bool()) |b1| {
+                            if (b1) {
+                                return .{ .Bool = true };
+                            } else {
+                                var v2 = try self.eval_expr(val.right);
+                                if (v2.as_bool()) |b2| {
+                                    return .{ .Bool = b2 };
+                                }
+                            }
+                        }
+                        return LigErr.ExpectedBooleanExpression;
+                    },
+                    else => {},
+                }
                 var v1 = try self.eval_expr(val.left);
                 var v2 = try self.eval_expr(val.right);
                 switch (val.operator.tok) {
