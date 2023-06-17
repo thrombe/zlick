@@ -281,11 +281,11 @@ pub const Parser = struct {
     fn logic_or(self: *Self) anyerror!*Expr {
         var expr = try self.logic_and();
 
-        if (self.match_next(&[_]TokenType{.Or})) {
+        while (self.match_next(&[_]TokenType{.Or})) {
             var operator = self.tokens[self.curr];
             self.curr += 1;
 
-            var right = try self.logic_or();
+            var right = try self.logic_and();
             var stack_expr = .{ .Binary = .{ .left = expr, .operator = operator, .right = right } };
             expr = try self.alloc.create(Expr);
             expr.* = stack_expr;
@@ -297,11 +297,11 @@ pub const Parser = struct {
     fn logic_and(self: *Self) anyerror!*Expr {
         var expr = try self.equality();
 
-        if (self.match_next(&[_]TokenType{.And})) {
+        while (self.match_next(&[_]TokenType{.And})) {
             var operator = self.tokens[self.curr];
             self.curr += 1;
 
-            var right = try self.logic_and();
+            var right = try self.equality();
             var stack_expr = .{ .Binary = .{ .left = expr, .operator = operator, .right = right } };
             expr = try self.alloc.create(Expr);
             expr.* = stack_expr;
@@ -461,8 +461,8 @@ pub const Parser = struct {
 };
 
 // expression     → logic_or ;
-// logic_or       → logic_and ( "or" logic_or )? ;
-// logic_and      → equality ( "and" logical_and )? ;
+// logic_or       → logic_and ( "or" logic_and )* ;
+// logic_and      → equality ( "and" equality )* ;
 // equality       → comparison ( ( "!=" | "==" ) comparison )* ;
 // comparison     → term ( ( ">" | ">=" | "<" | "<=" ) term )* ;
 // term           → factor ( ( "-" | "+" ) factor )* ;
