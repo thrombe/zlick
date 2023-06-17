@@ -50,6 +50,8 @@ pub const LigErr = error{
     ExpectedSemicolon,
     ExpectedVariableName,
     UndefinedVariable,
+    ExpectedLeftBrace,
+    ExpectedBooleanExpression,
 };
 
 const Lig = struct {
@@ -127,6 +129,7 @@ const Lig = struct {
             interpreter.evaluate_stmt(s) catch |err| {
                 std.debug.print("{}\n", .{err});
             };
+            interpreter.freeall_stmt(s);
         }
         // std.debug.print("{any}\n", .{tokens.items});
         // std.debug.print("{any}\n", .{expr});

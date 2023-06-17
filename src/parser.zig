@@ -56,6 +56,11 @@ pub const Stmt = union(enum) {
         name: []const u8,
         expr: *Expr,
     },
+    If: struct {
+        condition: *Expr,
+        if_block: *Stmt,
+        else_block: ?*Stmt,
+    },
     Block: []*Stmt,
 };
 
@@ -192,6 +197,43 @@ pub const Parser = struct {
             var stmt = try self.alloc.create(Stmt);
             stmt.* = .{ .Block = stmts };
             return stmt;
+        } else if (self.match_next(&[_]TokenType{.If})) {
+            self.curr += 1;
+
+            var condition = try self.expression();
+
+            if (!self.match_next(&[_]TokenType{.LeftBrace})) {
+                return error.ExpectedLeftBrace;
+            }
+            self.curr += 1;
+            var stmts = try self.block();
+            var if_block = try self.alloc.create(Stmt);
+            if_block.* = .{ .Block = stmts };
+
+            var stmt = try self.alloc.create(Stmt);
+            errdefer self.alloc.destroy(stmt);
+
+            if (self.match_next(&[_]TokenType{.Else})) {
+                self.curr += 1;
+
+                if (self.match_next(&[_]TokenType{.If})) {
+                    var other_if = try self.statement();
+                    stmt.* = .{ .If = .{ .condition = condition, .if_block = if_block, .else_block = other_if } };
+                    return stmt;
+                } else if (self.match_next(&[_]TokenType{.LeftBrace})) {
+                    self.curr += 1;
+                    stmts = try self.block();
+                    var else_block = try self.alloc.create(Stmt);
+                    else_block.* = .{ .Block = stmts };
+                    stmt.* = .{ .If = .{ .condition = condition, .if_block = if_block, .else_block = else_block } };
+                    return stmt;
+                } else {
+                    return error.ExpectedLeftBrace;
+                }
+            } else {
+                stmt.* = .{ .If = .{ .condition = condition, .if_block = if_block, .else_block = null } };
+                return stmt;
+            }
         } else {
             return try self.assignment_or_expr_stmt();
         }
@@ -402,11 +444,12 @@ pub const Parser = struct {
 // declaration    → varDecl | statement ;
 //
 // statement      → exprStmt
-//                | printStmt
+//                | printStmt | ifStatement
 //                | block ;
 //
 // block          → "{" declaration* "}" ;
 // exprStmt       → expression ";" ;
+// ifStatemtnt    → "if" expression block ( "else" (ifStatement | block) )? ;
 // printStmt      → "print" expression ";" ;
 // varDecl        → "var" IDENTIFIER ( "=" expression )? ";" ;
 

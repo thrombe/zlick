@@ -103,8 +103,6 @@ pub const Interpreter = struct {
     }
 
     fn eval_expr(self: *Self, expr: *Expr) anyerror!Value {
-        defer self.alloc.destroy(expr);
-
         switch (expr.*) {
             .Binary => |val| {
                 var v1 = try self.eval_expr(val.left);
@@ -233,8 +231,6 @@ pub const Interpreter = struct {
 
     // stmt is assumed to be owned
     pub fn evaluate_stmt(self: *Self, stmt: *Stmt) !void {
-        defer self.alloc.destroy(stmt);
-
         switch (stmt.*) {
             .Print => |expr| {
                 var val = try self.eval_expr(expr);
@@ -270,9 +266,6 @@ pub const Interpreter = struct {
                 try self.environment.set(val.name, value);
             },
             .Block => |stmts| {
-                defer self.alloc.free(stmts);
-                // TODO: errdefer destroy all statements
-
                 var prev = self.environment;
                 self.environment = try prev.enclosed();
                 defer {
@@ -282,6 +275,72 @@ pub const Interpreter = struct {
 
                 for (stmts) |s| {
                     try self.evaluate_stmt(s);
+                }
+            },
+            .If => |s| {
+                var condition = try self.eval_expr(s.condition);
+                switch (condition) {
+                    .Bool => |b| {
+                        if (b) {
+                            try self.evaluate_stmt(s.if_block);
+                        } else if (s.else_block) |blk| {
+                            try self.evaluate_stmt(blk);
+                        }
+                    },
+                    else => return error.ExpectedBooleanExpression,
+                }
+            },
+        }
+    }
+
+    pub fn freeall_expr(self: *Self, expr: *Expr) void {
+        defer self.alloc.destroy(expr);
+
+        switch (expr.*) {
+            .Binary => |val| {
+                self.freeall_expr(val.left);
+                self.freeall_expr(val.right);
+            },
+            .Unary => |val| {
+                self.freeall_expr(val.oparand);
+            },
+            .Literal => {},
+            .Group => |val| {
+                self.freeall_expr(val);
+            },
+            .Variable => {},
+        }
+    }
+
+    pub fn freeall_stmt(self: *Self, stmt: *Stmt) void {
+        defer self.alloc.destroy(stmt);
+
+        switch (stmt.*) {
+            .Print => |e| {
+                self.freeall_expr(e);
+            },
+            .Expr => |e| {
+                self.freeall_expr(e);
+            },
+            .Let => |e| {
+                if (e.init_expr) |ne| {
+                    self.freeall_expr(ne);
+                }
+            },
+            .Assign => |v| {
+                self.freeall_expr(v.expr);
+            },
+            .Block => |stmts| {
+                defer self.alloc.free(stmts);
+                for (stmts) |s| {
+                    self.freeall_stmt(s);
+                }
+            },
+            .If => |v| {
+                self.freeall_expr(v.condition);
+                self.freeall_stmt(v.if_block);
+                if (v.else_block) |b| {
+                    self.freeall_stmt(b);
                 }
             },
         }
