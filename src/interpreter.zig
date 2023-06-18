@@ -335,6 +335,35 @@ pub const Interpreter = struct {
                     }
                 }
             },
+            .For => |val| {
+                var prev = self.environment;
+                self.environment = try prev.enclosed();
+                defer {
+                    self.environment.deinit();
+                    self.environment = prev;
+                }
+
+                if (val.start) |s| {
+                    try self.evaluate_stmt(s);
+                }
+
+                while (true) {
+                    if (val.mid) |e| {
+                        var mid = try self.eval_expr(e);
+                        if (mid.as_bool()) |b| {
+                            if (!b) {
+                                break;
+                            }
+                        }
+                    }
+
+                    try self.evaluate_stmt(val.block);
+
+                    if (val.end) |s| {
+                        try self.evaluate_stmt(s);
+                    }
+                }
+            },
         }
     }
 
@@ -391,6 +420,19 @@ pub const Interpreter = struct {
             .While => |v| {
                 self.freeall_expr(v.condition);
                 self.freeall_stmt(v.block);
+            },
+            .For => |val| {
+                if (val.start) |s| {
+                    self.freeall_stmt(s);
+                }
+                if (val.mid) |e| {
+                    self.freeall_expr(e);
+                }
+                if (val.end) |s| {
+                    self.freeall_stmt(s);
+                }
+
+                self.freeall_stmt(val.block);
             },
         }
     }

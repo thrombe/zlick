@@ -65,6 +65,12 @@ pub const Stmt = union(enum) {
         condition: *Expr,
         block: *Stmt,
     },
+    For: struct {
+        start: ?*Stmt,
+        mid: ?*Expr,
+        end: ?*Stmt,
+        block: *Stmt,
+    },
     Block: []*Stmt,
 };
 
@@ -255,6 +261,51 @@ pub const Parser = struct {
             var while_stmt = try self.alloc.create(Stmt);
             while_stmt.* = .{ .While = .{ .condition = condition, .block = blk } };
             return while_stmt;
+        } else if (self.match_next(&[_]TokenType{.For})) {
+            self.curr += 1;
+
+            var start: ?*Stmt = null;
+            if (self.match_next(&[_]TokenType{.Let})) {
+                self.curr += 1;
+
+                start = try self.var_declaration();
+            } else if (self.match_next(&[_]TokenType{.Semicolon})) {
+                self.curr += 1;
+            } else {
+                start = try self.assignment_or_expr_stmt();
+            }
+
+            var mid: ?*Expr = null;
+            if (self.match_next(&[_]TokenType{.Semicolon})) {
+                self.curr += 1;
+            } else {
+                mid = try self.expression();
+
+                if (!self.match_next(&[_]TokenType{.Semicolon})) {
+                    return error.ExpectedSemicolon;
+                }
+                self.curr += 1;
+            }
+
+            var end: ?*Stmt = null;
+            if (self.match_next(&[_]TokenType{.Semicolon})) {
+                self.curr += 1;
+            } else {
+                end = try self.assignment_or_expr_stmt();
+            }
+
+            if (!self.match_next(&[_]TokenType{.LeftBrace})) {
+                return error.ExpectedLeftBrace;
+            }
+            self.curr += 1;
+
+            var stmts = try self.block();
+            var blk = try self.alloc.create(Stmt);
+            blk.* = .{ .Block = stmts };
+
+            var for_stmt = try self.alloc.create(Stmt);
+            for_stmt.* = .{ .For = .{ .start = start, .mid = mid, .end = end, .block = blk } };
+            return for_stmt;
         } else {
             return try self.assignment_or_expr_stmt();
         }
@@ -498,14 +549,16 @@ pub const Parser = struct {
 //
 // declaration    → varDecl | statement ;
 //
-// statement      → exprStmt
-//                | printStmt | ifStatement | whileStament
+// statement      → exprStmt | assignment
+//                | printStmt | ifStatement | whileStament | forStatemtnt
 //                | block ;
 //
 // block          → "{" declaration* "}" ;
 // exprStmt       → expression ";" ;
+// assignment     → expression ( "=" expression )? ";" ;
 // ifStatemtnt    → "if" expression block ( "else" (ifStatement | block) )? ;
 // whileStatement → "while" expression block ;
+// forStatement   → "for" ( varDecl | exprStmt | assignment | ";" ) expression? ";" (assignment | exprStmt)? block ;
 // printStmt      → "print" expression ";" ;
 // varDecl        → "var" IDENTIFIER ( "=" expression )? ";" ;
 
