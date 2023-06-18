@@ -52,6 +52,8 @@ pub const LigErr = error{
     UndefinedVariable,
     ExpectedLeftBrace,
     ExpectedBooleanExpression,
+    BadBreak,
+    BadContinue,
 };
 
 const Lig = struct {
@@ -126,10 +128,18 @@ const Lig = struct {
 
         while (try parser.next_stmt()) |s| {
             // try printer.print_stmt(s);
-            interpreter.evaluate_stmt(s) catch |err| {
+            var r = interpreter.evaluate_stmt(s);
+            defer interpreter.freeall_stmt(s);
+
+            if (r) |res| {
+                switch (res) {
+                    .Void => {},
+                    .Continue => return error.BadContinue,
+                    .Break => return error.BadBreak,
+                }
+            } else |err| {
                 std.debug.print("{}\n", .{err});
-            };
-            interpreter.freeall_stmt(s);
+            }
         }
         // std.debug.print("{any}\n", .{tokens.items});
         // std.debug.print("{any}\n", .{expr});

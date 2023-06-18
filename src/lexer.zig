@@ -30,6 +30,8 @@ pub const Scanner = struct {
         try keywords.put("true", .True);
         try keywords.put("let", .Let);
         try keywords.put("while", .While);
+        try keywords.put("break", .Break);
+        try keywords.put("continue", .Continue);
 
         try keywords.put("print", .Print);
 
@@ -202,6 +204,8 @@ pub const TokenType = union(enum) {
     True,
     Let,
     While,
+    Break,
+    Continue,
 
     Print,
 

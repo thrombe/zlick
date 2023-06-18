@@ -86,6 +86,12 @@ pub const Environment = struct {
     }
 };
 
+pub const StmtResult = enum {
+    Break,
+    Continue,
+    Void,
+};
+
 pub const Interpreter = struct {
     const Self = @This();
     alloc: std.mem.Allocator,
@@ -260,8 +266,7 @@ pub const Interpreter = struct {
         }
     }
 
-    // stmt is assumed to be owned
-    pub fn evaluate_stmt(self: *Self, stmt: *Stmt) !void {
+    pub fn evaluate_stmt(self: *Self, stmt: *Stmt) !StmtResult {
         switch (stmt.*) {
             .Print => |expr| {
                 var val = try self.eval_expr(expr);
@@ -296,6 +301,8 @@ pub const Interpreter = struct {
                 var value = try self.eval_expr(val.expr);
                 try self.environment.set(val.name, value);
             },
+            .Break => return .Break,
+            .Continue => return .Continue,
             .Block => |stmts| {
                 var prev = self.environment;
                 self.environment = try prev.enclosed();
@@ -305,17 +312,24 @@ pub const Interpreter = struct {
                 }
 
                 for (stmts) |s| {
-                    try self.evaluate_stmt(s);
+                    var r = try self.evaluate_stmt(s);
+                    if (r != .Void) {
+                        return r;
+                    }
                 }
             },
             .If => |s| {
                 var condition = try self.eval_expr(s.condition);
                 switch (condition) {
                     .Bool => |b| {
+                        var r: StmtResult = .Void;
                         if (b) {
-                            try self.evaluate_stmt(s.if_block);
+                            r = try self.evaluate_stmt(s.if_block);
                         } else if (s.else_block) |blk| {
-                            try self.evaluate_stmt(blk);
+                            r = try self.evaluate_stmt(blk);
+                        }
+                        if (r != .Void) {
+                            return r;
                         }
                     },
                     else => return error.ExpectedBooleanExpression,
@@ -326,7 +340,11 @@ pub const Interpreter = struct {
                     var condition = try self.eval_expr(val.condition);
                     if (condition.as_bool()) |b| {
                         if (b) {
-                            try self.evaluate_stmt(val.block);
+                            var r = try self.evaluate_stmt(val.block);
+                            switch (r) {
+                                .Break => break,
+                                .Continue, .Void => {},
+                            }
                         } else {
                             break;
                         }
@@ -344,7 +362,12 @@ pub const Interpreter = struct {
                 }
 
                 if (val.start) |s| {
-                    try self.evaluate_stmt(s);
+                    var r = try self.evaluate_stmt(s);
+                    switch (r) {
+                        .Void => {},
+                        .Continue => return error.BadContinue,
+                        .Break => return error.BadBreak,
+                    }
                 }
 
                 while (true) {
@@ -357,14 +380,24 @@ pub const Interpreter = struct {
                         }
                     }
 
-                    try self.evaluate_stmt(val.block);
+                    var r = try self.evaluate_stmt(val.block);
+                    switch (r) {
+                        .Break => break,
+                        .Continue, .Void => {},
+                    }
 
                     if (val.end) |s| {
-                        try self.evaluate_stmt(s);
+                        r = try self.evaluate_stmt(s);
+                        switch (r) {
+                            .Void => {},
+                            .Continue => return error.BadContinue,
+                            .Break => return error.BadBreak,
+                        }
                     }
                 }
             },
         }
+        return .Void;
     }
 
     pub fn freeall_expr(self: *Self, expr: *Expr) void {
@@ -417,6 +450,7 @@ pub const Interpreter = struct {
                     self.freeall_stmt(b);
                 }
             },
+            .Break, .Continue => {},
             .While => |v| {
                 self.freeall_expr(v.condition);
                 self.freeall_stmt(v.block);

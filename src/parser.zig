@@ -72,6 +72,8 @@ pub const Stmt = union(enum) {
         block: *Stmt,
     },
     Block: []*Stmt,
+    Break,
+    Continue,
 };
 
 pub const Parser = struct {
@@ -306,6 +308,26 @@ pub const Parser = struct {
             var for_stmt = try self.alloc.create(Stmt);
             for_stmt.* = .{ .For = .{ .start = start, .mid = mid, .end = end, .block = blk } };
             return for_stmt;
+        } else if (self.match_next(&[_]TokenType{.Break})) {
+            self.curr += 1;
+            if (!self.match_next(&[_]TokenType{.Semicolon})) {
+                return error.ExpectedSemicolon;
+            }
+            self.curr += 1;
+
+            var s = try self.alloc.create(Stmt);
+            s.* = .Break;
+            return s;
+        } else if (self.match_next(&[_]TokenType{.Continue})) {
+            self.curr += 1;
+            if (!self.match_next(&[_]TokenType{.Semicolon})) {
+                return error.ExpectedSemicolon;
+            }
+            self.curr += 1;
+
+            var s = try self.alloc.create(Stmt);
+            s.* = .Continue;
+            return s;
         } else {
             return try self.assignment_or_expr_stmt();
         }
