@@ -571,10 +571,12 @@ pub const Parser = struct {
 //
 // declaration    → varDecl | statement ;
 //
-// statement      → exprStmt | assignment
+// statement      → exprStmt | assignment | breakStmt | continueStmt
 //                | printStmt | ifStatement | whileStament | forStatemtnt
 //                | block ;
 //
+// breakStmt      → "break" ";" ;
+// ContinueStmt   → "continue" ";" ;
 // block          → "{" declaration* "}" ;
 // exprStmt       → expression ";" ;
 // assignment     → expression ( "=" expression )? ";" ;
