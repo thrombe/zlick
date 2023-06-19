@@ -35,6 +35,11 @@ pub const Expr = union(enum) {
         operator: Token,
         oparand: *Expr,
     },
+    Call: struct {
+        callee: *Expr,
+        args: []*Expr,
+        rparen: Token,
+    },
 };
 
 pub const Literal = union(enum) {
@@ -489,8 +494,55 @@ pub const Parser = struct {
             expr.* = stack_expr;
             return expr;
         } else {
-            return try self.primary();
+            return try self.call();
         }
+    }
+
+    fn call(self: *Self) !*Expr {
+        var expr = try self.primary();
+
+        while (true) {
+            if (self.match_next(&[_]TokenType{.LeftParen})) {
+                self.curr += 1;
+
+                expr = try self.finish_call(expr);
+            } else {
+                break;
+            }
+        }
+
+        return expr;
+    }
+
+    fn finish_call(self: *Self, callee: *Expr) !*Expr {
+        var args = std.ArrayList(*Expr).init(self.alloc);
+        errdefer args.deinit();
+
+        if (!self.match_next(&[_]TokenType{.RightParen})) {
+            while (true) {
+                if (args.items.len >= 255) {
+                    return error.TooManyArguments;
+                }
+                try args.append(try self.expression());
+                if (!self.match_next(&[_]TokenType{.Comma})) {
+                    break;
+                }
+                self.curr += 1;
+                if (self.match_next(&[_]TokenType{.RightParen})) {
+                    break;
+                }
+            }
+        }
+
+        if (!self.match_next(&[_]TokenType{.RightParen})) {
+            return error.ExpectedRightParen;
+        }
+        var rparen = self.tokens[self.curr];
+        self.curr += 1;
+
+        var expr = try self.alloc.create(Expr);
+        expr.* = .{ .Call = .{ .callee = callee, .args = args.toOwnedSlice(), .rparen = rparen } };
+        return expr;
     }
 
     fn primary(self: *Self) !*Expr {
@@ -561,8 +613,9 @@ pub const Parser = struct {
 // comparison     → term ( ( ">" | ">=" | "<" | "<=" ) term )* ;
 // term           → factor ( ( "-" | "+" ) factor )* ;
 // factor         → unary ( ( "/" | "*" ) unary )* ;
-// unary          → ( "!" | "-" ) unary
-//                | primary ;
+// unary          → ( "!" | "-" ) unary | call ;
+// call           → primary ( "(" arguments? ")" )* ;
+// arguments      → expression ( "," expression )* ","? ;
 // primary        → NUMBER | STRING | "true" | "false" | "nil"
 //                | "(" expression ")"
 //                | IDENTIFIER ;

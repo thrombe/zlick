@@ -54,6 +54,9 @@ pub const LigErr = error{
     ExpectedBooleanExpression,
     BadBreak,
     BadContinue,
+    TooManyArguments,
+    NotCallable,
+    IncorrectNumberOfArgs,
 };
 
 const Lig = struct {
@@ -123,7 +126,7 @@ const Lig = struct {
         var printer = Printer{};
         _ = printer;
 
-        var interpreter = Interpreter.new(alloc);
+        var interpreter = try Interpreter.new(alloc);
         defer interpreter.deinit();
 
         while (try parser.next_stmt()) |s| {

@@ -10,6 +10,7 @@ pub const Value = union(enum) {
     Number: f64,
     None,
     Bool: bool,
+    Callable: Callable,
 
     fn as_num(self: Value) ?f64 {
         switch (self) {
@@ -40,14 +41,17 @@ pub const Environment = struct {
         };
     }
 
-    pub fn enclosed(self: *Self) !Self {
+    pub fn enclosed(self: *Self) !*Self {
         var alloc = self.values.allocator;
-        var env = .{ .values = ValueMap.init(alloc), .super = self };
+        var env = try alloc.create(Self);
+        env.* = .{ .values = ValueMap.init(alloc), .super = self };
         return env;
     }
 
     pub fn deinit(self: *Self) void {
+        var alloc = self.values.allocator;
         self.values.deinit();
+        alloc.destroy(self);
     }
 
     pub fn define(self: *Self, name: []const u8, val: Value) !void {
@@ -92,20 +96,101 @@ pub const StmtResult = enum {
     Void,
 };
 
+// - [vtable abstraction of some kind · Issue #130](https://github.com/ziglang/zig/issues/130)
+// - [zig/lib/std/heap/general_purpose_allocator.zig](https://github.com/ziglang/zig/blob/master/lib/std/heap/general_purpose_allocator.zig)
+// - [zig/lib/std/mem/Allocator.zig](https://github.com/ziglang/zig/blob/master/lib/std/mem/Allocator.zig)
+const Callable = struct {
+    const Self = @This();
+    pub const TypeArityFn = *const fn (self: *anyopaque) u8;
+    pub const TypeCallFn = *const fn (self: *anyopaque, interpreter: *Interpreter, args: []Value) anyerror!Value;
+    pub const TypeDeinitFn = *const fn (self: *anyopaque) void;
+
+    self: *anyopaque,
+    vtable: *const struct {
+        arityFn: TypeArityFn,
+        callFn: TypeCallFn,
+        deinitFn: TypeDeinitFn,
+    },
+
+    pub fn arity(self: *Self) u8 {
+        return self.vtable.arityFn(self.self);
+    }
+    pub fn call(self: *Self, interpreter: *Interpreter, args: []Value) anyerror!Value {
+        return self.vtable.callFn(self.self, interpreter, args);
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.vtable.deinitFn(self.self);
+    }
+
+    pub fn new(comptime T: type, val: *T) Self {
+        return .{
+            .self = val,
+            .vtable = &.{
+                .arityFn = @ptrCast(Callable.TypeArityFn, &T.arity),
+                .callFn = @ptrCast(Callable.TypeCallFn, &T.call),
+                .deinitFn = @ptrCast(Callable.TypeDeinitFn, &T.deinit),
+            },
+        };
+    }
+};
+
+const Clock = struct {
+    const Self = @This();
+    alloc: std.mem.Allocator,
+
+    fn arity(_: *Self) u8 {
+        return 0;
+    }
+    fn call(_: *Self, _: *Interpreter, _: []Value) anyerror!Value {
+        return .{ .Number = @intToFloat(f64, std.time.milliTimestamp()) };
+    }
+    fn deinit(self: *Self) void {
+        self.alloc.destroy(self);
+    }
+
+    pub fn callable(alloc: std.mem.Allocator) !Callable {
+        var self: Self = .{
+            .alloc = alloc,
+        };
+        var heap = try alloc.create(Self);
+        heap.* = self;
+        return Callable.new(Self, heap);
+    }
+};
+
 pub const Interpreter = struct {
     const Self = @This();
     alloc: std.mem.Allocator,
-    environment: Environment,
+    global_env: *Environment,
+    environment: *Environment,
 
-    pub fn new(alloc: std.mem.Allocator) Self {
+    global_funcs: struct {
+        clock: Callable,
+    },
+
+    pub fn new(alloc: std.mem.Allocator) !Self {
+        var globals = try alloc.create(Environment);
+        globals.* = Environment.new(alloc);
+
+        var clock = try Clock.callable(alloc);
+
+        try globals.define(
+            "clock",
+            .{ .Callable = clock },
+        );
+
         return .{
             .alloc = alloc,
-            .environment = Environment.new(alloc),
+            .environment = globals,
+            .global_env = globals,
+            .global_funcs = .{ .clock = clock },
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.environment.deinit();
+        self.global_funcs.clock.deinit();
     }
 
     fn eval_expr(self: *Self, expr: *Expr) anyerror!Value {
@@ -263,6 +348,41 @@ pub const Interpreter = struct {
             .Variable => |name| {
                 return self.environment.get(name);
             },
+            .Call => |val| {
+                var callee = try self.eval_expr(val.callee);
+                var args = try self.alloc.alloc(Value, val.args.len);
+                defer self.alloc.free(args);
+
+                for (val.args) |arg, i| {
+                    var v = try self.eval_expr(arg);
+                    args[i] = v;
+                }
+
+                return try self.call(callee, args);
+            },
+        }
+    }
+
+    fn call(self: *Self, callee: Value, args: []Value) !Value {
+        var callable: ?Callable = null;
+        switch (callee) {
+            .Callable => |c| {
+                callable = c;
+            },
+            else => {},
+        }
+
+        if (callable) |cal| {
+            var c: Callable = cal;
+            // _ = c;
+            var u: u8 = c.arity();
+            _ = u;
+            if (c.arity() != args.len) {
+                return error.IncorrectNumberOfArgs;
+            }
+            return try c.call(self, args);
+        } else {
+            return error.NotCallable;
         }
     }
 
@@ -282,6 +402,9 @@ pub const Interpreter = struct {
                     },
                     .None => {
                         std.debug.print("None", .{});
+                    },
+                    .Callable => {
+                        std.debug.print("<native callable>", .{});
                     },
                 }
                 std.debug.print("\n", .{});
@@ -416,6 +539,13 @@ pub const Interpreter = struct {
                 self.freeall_expr(val);
             },
             .Variable => {},
+            .Call => |val| {
+                self.freeall_expr(val.callee);
+                for (val.args) |arg| {
+                    self.freeall_expr(arg);
+                }
+                self.alloc.free(val.args);
+            },
         }
     }
 
