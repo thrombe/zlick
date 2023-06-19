@@ -25,6 +25,15 @@ pub const Value = union(enum) {
             else => return null,
         }
     }
+
+    fn deinit(self: *Value, _: std.mem.Allocator) void {
+        switch (self.*) {
+            .Callable => |*c| {
+                c.deinit();
+            },
+            else => {},
+        }
+    }
 };
 
 pub const Environment = struct {
@@ -50,6 +59,10 @@ pub const Environment = struct {
 
     pub fn deinit(self: *Self) void {
         var alloc = self.values.allocator;
+        var iter = self.values.iterator();
+        while (iter.next()) |v| {
+            v.value_ptr.deinit(alloc);
+        }
         self.values.deinit();
         alloc.destroy(self);
     }
@@ -159,15 +172,45 @@ const Clock = struct {
     }
 };
 
+const UserFn = struct {
+    const Self = @This();
+    alloc: std.mem.Allocator,
+    params: [][]const u8,
+    body: *Stmt,
+
+    fn arity(self: *Self) u8 {
+        return @intCast(u8, self.params.len);
+    }
+    fn call(self: *Self, interpreter: *Interpreter, args: []Value) anyerror!Value {
+        var prev_env = interpreter.environment;
+        interpreter.environment = try interpreter.global_env.enclosed();
+        defer {
+            interpreter.environment.deinit();
+            interpreter.environment = prev_env;
+        }
+
+        for (self.params) |param, i| {
+            try interpreter.environment.define(param, args[i]);
+        }
+
+        var r = try interpreter.evaluate_stmt(self.body);
+        switch (r) {
+            .Void => {},
+            .Break => return error.BadBreak,
+            .Continue => return error.BadContinue,
+        }
+        return .None;
+    }
+    fn deinit(self: *Self) void {
+        self.alloc.destroy(self);
+    }
+};
+
 pub const Interpreter = struct {
     const Self = @This();
     alloc: std.mem.Allocator,
     global_env: *Environment,
     environment: *Environment,
-
-    global_funcs: struct {
-        clock: Callable,
-    },
 
     pub fn new(alloc: std.mem.Allocator) !Self {
         var globals = try alloc.create(Environment);
@@ -184,13 +227,11 @@ pub const Interpreter = struct {
             .alloc = alloc,
             .environment = globals,
             .global_env = globals,
-            .global_funcs = .{ .clock = clock },
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.environment.deinit();
-        self.global_funcs.clock.deinit();
     }
 
     fn eval_expr(self: *Self, expr: *Expr) anyerror!Value {
@@ -519,6 +560,17 @@ pub const Interpreter = struct {
                     }
                 }
             },
+            .Function => |func| {
+                var f = UserFn{
+                    .alloc = self.alloc,
+                    .params = func.params,
+                    .body = func.body,
+                };
+                var heap = try self.alloc.create(UserFn);
+                heap.* = f;
+                var function = .{ .Callable = Callable.new(UserFn, heap) };
+                try self.environment.define(func.name, function);
+            },
         }
         return .Void;
     }
@@ -597,6 +649,10 @@ pub const Interpreter = struct {
                 }
 
                 self.freeall_stmt(val.block);
+            },
+            .Function => |func| {
+                self.alloc.free(func.params);
+                self.freeall_stmt(func.body);
             },
         }
     }

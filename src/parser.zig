@@ -76,6 +76,11 @@ pub const Stmt = union(enum) {
         end: ?*Stmt,
         block: *Stmt,
     },
+    Function: struct {
+        name: []const u8,
+        params: [][]const u8,
+        body: *Stmt,
+    },
     Block: []*Stmt,
     Break,
     Continue,
@@ -164,13 +169,75 @@ pub const Parser = struct {
     }
 
     fn declaration(self: *Self) !*Stmt {
-        var stmt: anyerror!*Stmt = undefined;
+        var stmt: *Stmt = undefined;
         if (self.match_next(&[_]TokenType{.Let})) {
             self.curr += 1;
             stmt = try self.var_declaration();
+        } else if (self.match_next(&[_]TokenType{.Fn})) {
+            self.curr += 1;
+            stmt = try self.function();
         } else {
             stmt = try self.statement();
         }
+        return stmt;
+    }
+
+    fn function(self: *Self) !*Stmt {
+        if (!self.match_next(&[_]TokenType{.{ .Identifier = "" }})) {
+            return error.ExpectedIdentifier;
+        }
+        var name = switch (self.tokens[self.curr].tok) {
+            .Identifier => |name| name,
+            else => unreachable,
+        };
+        self.curr += 1;
+
+        if (!self.match_next(&[_]TokenType{.LeftParen})) {
+            return error.ExpectedLeftParen;
+        }
+        self.curr += 1;
+
+        var params = std.ArrayList([]const u8).init(self.alloc);
+        errdefer params.deinit();
+
+        if (!self.match_next(&[_]TokenType{.RightParen})) {
+            while (true) {
+                if (params.items.len >= 255) {
+                    return error.TooManyArguments;
+                }
+                var param = try self.expression();
+                switch (param.*) {
+                    .Variable => |p| {
+                        try params.append(p);
+                        defer self.alloc.destroy(param);
+                    },
+                    else => return error.ExpectedParameter,
+                }
+                if (!self.match_next(&[_]TokenType{.Comma})) {
+                    break;
+                }
+                self.curr += 1;
+                if (self.match_next(&[_]TokenType{.RightParen})) {
+                    break;
+                }
+            }
+        }
+
+        if (!self.match_next(&[_]TokenType{.RightParen})) {
+            return error.ExpectedRightParen;
+        }
+        self.curr += 1;
+
+        if (!self.match_next(&[_]TokenType{.LeftBrace})) {
+            return error.ExpectedLeftBrace;
+        }
+        self.curr += 1;
+        var body = try self.block();
+        var body_block = try self.alloc.create(Stmt);
+        body_block.* = .{ .Block = body };
+
+        var stmt = try self.alloc.create(Stmt);
+        stmt.* = .{ .Function = .{ .name = name, .params = params.toOwnedSlice(), .body = body_block } };
         return stmt;
     }
 
@@ -619,10 +686,11 @@ pub const Parser = struct {
 // primary        → NUMBER | STRING | "true" | "false" | "nil"
 //                | "(" expression ")"
 //                | IDENTIFIER ;
+// parameters     → IDENTIFIER ( "," IDENTIFIER )* ","? ;
 
 // program        → declaration* EOF ;
 //
-// declaration    → varDecl | statement ;
+// declaration    → varDecl | fnDecl | statement ;
 //
 // statement      → exprStmt | assignment | breakStmt | continueStmt
 //                | printStmt | ifStatement | whileStament | forStatemtnt
@@ -638,4 +706,6 @@ pub const Parser = struct {
 // forStatement   → "for" ( varDecl | exprStmt | assignment | ";" ) expression? ";" (assignment | exprStmt)? block ;
 // printStmt      → "print" expression ";" ;
 // varDecl        → "var" IDENTIFIER ( "=" expression )? ";" ;
+// fnDecl         → "fn" function ;
+// function       → IDENTIFIER "(" parameters? ")" block ;
 

@@ -39,6 +39,7 @@ pub const LigErr = error{
     UnexpectedEOF,
     ExpectedPrimaryExpression,
     ExpectedRightParen,
+    ExpectedLeftParen,
 
     // runtime errors
     BadAddition,
@@ -57,6 +58,8 @@ pub const LigErr = error{
     TooManyArguments,
     NotCallable,
     IncorrectNumberOfArgs,
+    ExpectedIdentifier,
+    ExpectedParameter,
 };
 
 const Lig = struct {
@@ -129,10 +132,12 @@ const Lig = struct {
         var interpreter = try Interpreter.new(alloc);
         defer interpreter.deinit();
 
+        var temp = std.ArrayList(*Stmt).init(alloc);
+
         while (try parser.next_stmt()) |s| {
             // try printer.print_stmt(s);
             var r = interpreter.evaluate_stmt(s);
-            defer interpreter.freeall_stmt(s);
+            try temp.append(s);
 
             if (r) |res| {
                 switch (res) {
@@ -144,6 +149,11 @@ const Lig = struct {
                 std.debug.print("{}\n", .{err});
             }
         }
+
+        for (temp.items) |s| {
+            defer interpreter.freeall_stmt(s);
+        }
+        temp.deinit();
         // std.debug.print("{any}\n", .{tokens.items});
         // std.debug.print("{any}\n", .{expr});
     }
