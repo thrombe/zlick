@@ -146,7 +146,15 @@ const Callable = struct {
         self.vtable.deinitFn(self.self);
     }
 
-    pub fn new(comptime T: type, val: *T) Self {
+    pub fn new(val: anytype) Self {
+        const Ptr = @TypeOf(val);
+        const ptr_info = @typeInfo(Ptr);
+
+        // /usr/lib/zig/std/builtin.zig
+        const T = switch (ptr_info) {
+            .Pointer => |info| info.child,
+            else => unreachable,
+        };
         return .{
             .self = val,
             .vtable = &.{
@@ -178,7 +186,7 @@ const Clock = struct {
         };
         var heap = try alloc.create(Self);
         heap.* = self;
-        return Callable.new(Self, heap);
+        return Callable.new(heap);
     }
 };
 
@@ -590,7 +598,7 @@ pub const Interpreter = struct {
                 };
                 var heap = try self.alloc.create(UserFn);
                 heap.* = f;
-                var function = .{ .Callable = Callable.new(UserFn, heap) };
+                var function = .{ .Callable = Callable.new(heap) };
                 try self.environment.define(func.name, function);
             },
         }
