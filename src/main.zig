@@ -55,6 +55,7 @@ pub const LigErr = error{
     ExpectedBooleanExpression,
     BadBreak,
     BadContinue,
+    BadReturn,
     TooManyArguments,
     NotCallable,
     IncorrectNumberOfArgs,
@@ -133,6 +134,7 @@ const Lig = struct {
         defer interpreter.deinit();
 
         var temp = std.ArrayList(*Stmt).init(alloc);
+        defer temp.deinit();
 
         while (try parser.next_stmt()) |s| {
             // try printer.print_stmt(s);
@@ -144,6 +146,7 @@ const Lig = struct {
                     .Void => {},
                     .Continue => return error.BadContinue,
                     .Break => return error.BadBreak,
+                    .Return => return error.BadReturn,
                 }
             } else |err| {
                 std.debug.print("{}\n", .{err});
@@ -151,9 +154,8 @@ const Lig = struct {
         }
 
         for (temp.items) |s| {
-            defer interpreter.freeall_stmt(s);
+            interpreter.freeall_stmt(s);
         }
-        temp.deinit();
         // std.debug.print("{any}\n", .{tokens.items});
         // std.debug.print("{any}\n", .{expr});
     }

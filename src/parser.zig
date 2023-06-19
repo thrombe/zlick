@@ -81,6 +81,10 @@ pub const Stmt = union(enum) {
         params: [][]const u8,
         body: *Stmt,
     },
+    Return: struct {
+        ret_token: Token,
+        val: ?*Expr,
+    },
     Block: []*Stmt,
     Break,
     Continue,
@@ -400,6 +404,22 @@ pub const Parser = struct {
             var s = try self.alloc.create(Stmt);
             s.* = .Continue;
             return s;
+        } else if (self.match_next(&[_]TokenType{.Return})) {
+            self.curr += 1;
+
+            var expr: ?*Expr = null;
+            if (!self.match_next(&[_]TokenType{.Semicolon})) {
+                expr = try self.expression();
+            }
+            if (!self.match_next(&[_]TokenType{.Semicolon})) {
+                return error.ExpectedSemicolon;
+            }
+            var tok = self.tokens[self.curr];
+            self.curr += 1;
+
+            var s = try self.alloc.create(Stmt);
+            s.* = .{ .Return = .{ .val = expr, .ret_token = tok } };
+            return s;
         } else {
             return try self.assignment_or_expr_stmt();
         }
@@ -693,9 +713,10 @@ pub const Parser = struct {
 // declaration    → varDecl | fnDecl | statement ;
 //
 // statement      → exprStmt | assignment | breakStmt | continueStmt
-//                | printStmt | ifStatement | whileStament | forStatemtnt
+//                | printStmt | ifStatement | whileStament | forStatemtnt | returnStmt
 //                | block ;
 //
+// returnStmt     → "return" expression? ";" ;
 // breakStmt      → "break" ";" ;
 // ContinueStmt   → "continue" ";" ;
 // block          → "{" declaration* "}" ;

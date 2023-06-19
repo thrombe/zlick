@@ -103,10 +103,18 @@ pub const Environment = struct {
     }
 };
 
-pub const StmtResult = enum {
+pub const StmtResult = union(enum) {
     Break,
     Continue,
+    Return: Value,
     Void,
+
+    fn is_void(self: *StmtResult) bool {
+        switch (self.*) {
+            .Void => return true,
+            else => return false,
+        }
+    }
 };
 
 // - [vtable abstraction of some kind · Issue #130](https://github.com/ziglang/zig/issues/130)
@@ -126,6 +134,8 @@ const Callable = struct {
     },
 
     pub fn arity(self: *Self) u8 {
+        // fn alloc(ctx: *anyopaque, len: usize, log2_ptr_align: u8, ret_addr: usize) ?[*]u8 {
+        //     const self = @ptrCast(*Self, @alignCast(@alignOf(Self), ctx));
         return self.vtable.arityFn(self.self);
     }
     pub fn call(self: *Self, interpreter: *Interpreter, args: []Value) anyerror!Value {
@@ -198,6 +208,7 @@ const UserFn = struct {
             .Void => {},
             .Break => return error.BadBreak,
             .Continue => return error.BadContinue,
+            .Return => |val| return val,
         }
         return .None;
     }
@@ -467,6 +478,13 @@ pub const Interpreter = struct {
             },
             .Break => return .Break,
             .Continue => return .Continue,
+            .Return => |val| {
+                if (val.val) |v| {
+                    return .{ .Return = try self.eval_expr(v) };
+                } else {
+                    return .Void;
+                }
+            },
             .Block => |stmts| {
                 var prev = self.environment;
                 self.environment = try prev.enclosed();
@@ -477,7 +495,7 @@ pub const Interpreter = struct {
 
                 for (stmts) |s| {
                     var r = try self.evaluate_stmt(s);
-                    if (r != .Void) {
+                    if (!r.is_void()) {
                         return r;
                     }
                 }
@@ -492,7 +510,7 @@ pub const Interpreter = struct {
                         } else if (s.else_block) |blk| {
                             r = try self.evaluate_stmt(blk);
                         }
-                        if (r != .Void) {
+                        if (!r.is_void()) {
                             return r;
                         }
                     },
@@ -508,6 +526,7 @@ pub const Interpreter = struct {
                             switch (r) {
                                 .Break => break,
                                 .Continue, .Void => {},
+                                .Return => return r,
                             }
                         } else {
                             break;
@@ -531,6 +550,7 @@ pub const Interpreter = struct {
                         .Void => {},
                         .Continue => return error.BadContinue,
                         .Break => return error.BadBreak,
+                        .Return => return error.BadReturn,
                     }
                 }
 
@@ -548,6 +568,7 @@ pub const Interpreter = struct {
                     switch (r) {
                         .Break => break,
                         .Continue, .Void => {},
+                        .Return => return r,
                     }
 
                     if (val.end) |s| {
@@ -556,6 +577,7 @@ pub const Interpreter = struct {
                             .Void => {},
                             .Continue => return error.BadContinue,
                             .Break => return error.BadBreak,
+                            .Return => return error.BadReturn,
                         }
                     }
                 }
@@ -653,6 +675,11 @@ pub const Interpreter = struct {
             .Function => |func| {
                 self.alloc.free(func.params);
                 self.freeall_stmt(func.body);
+            },
+            .Return => |val| {
+                if (val.val) |v| {
+                    self.freeall_expr(v);
+                }
             },
         }
     }
