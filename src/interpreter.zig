@@ -26,14 +26,14 @@ pub const Value = union(enum) {
         }
     }
 
-    fn deinit(self: *Value, _: std.mem.Allocator) void {
-        switch (self.*) {
-            .Callable => |*c| {
-                c.deinit();
-            },
-            else => {},
-        }
-    }
+    // fn deinit(self: *Value, _: std.mem.Allocator) void {
+    //     switch (self.*) {
+    //         .Callable => |*c| {
+    //             c.deinit();
+    //         },
+    //         else => {},
+    //     }
+    // }
 };
 
 pub const Environment = struct {
@@ -59,10 +59,10 @@ pub const Environment = struct {
 
     pub fn deinit(self: *Self) void {
         var alloc = self.values.allocator;
-        var iter = self.values.iterator();
-        while (iter.next()) |v| {
-            v.value_ptr.deinit(alloc);
-        }
+        // var iter = self.values.iterator();
+        // while (iter.next()) |v| {
+        //     v.value_ptr.deinit(alloc);
+        // }
         self.values.deinit();
         alloc.destroy(self);
     }
@@ -151,6 +151,7 @@ const Callable = struct {
         const ptr_info = @typeInfo(Ptr);
 
         // /usr/lib/zig/std/builtin.zig
+        std.debug.assert(ptr_info == .Pointer);
         const T = switch (ptr_info) {
             .Pointer => |info| info.child,
             else => unreachable,
@@ -163,6 +164,35 @@ const Callable = struct {
                 .deinitFn = @ptrCast(Callable.TypeDeinitFn, &T.deinit),
             },
         };
+    }
+};
+
+const Deallocatable = struct {
+    const Self = @This();
+    pub const TypeDeinitFn = *const fn (self: *anyopaque) void;
+
+    self: *anyopaque,
+    deinitFn: TypeDeinitFn,
+
+    pub fn new(val: anytype) Self {
+        const Ptr = @TypeOf(val);
+        const ptr_info = @typeInfo(Ptr);
+
+        // /usr/lib/zig/std/builtin.zig
+        std.debug.assert(ptr_info == .Pointer);
+        const T = switch (ptr_info) {
+            .Pointer => |info| info.child,
+            else => unreachable,
+        };
+
+        return .{
+            .self = val,
+            .deinitFn = @ptrCast(Self.TypeDeinitFn, &T.deinit),
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.deinitFn(self.self);
     }
 };
 
@@ -196,14 +226,16 @@ const UserFn = struct {
     params: [][]const u8,
     body: *Stmt,
 
+    closure: *Environment,
+
     fn arity(self: *Self) u8 {
         return @intCast(u8, self.params.len);
     }
     fn call(self: *Self, interpreter: *Interpreter, args: []Value) anyerror!Value {
         var prev_env = interpreter.environment;
-        interpreter.environment = try interpreter.global_env.enclosed();
+        interpreter.environment = try interpreter.enclosed_env(self.closure);
         defer {
-            interpreter.environment.deinit();
+            // interpreter.environment.deinit();
             interpreter.environment = prev_env;
         }
 
@@ -227,15 +259,34 @@ const UserFn = struct {
 
 pub const Interpreter = struct {
     const Self = @This();
+    const EnvironmentList = std.ArrayList(*Environment);
+    const DeallocatableList = std.ArrayList(Deallocatable);
+
     alloc: std.mem.Allocator,
     global_env: *Environment,
     environment: *Environment,
 
+    env_list: EnvironmentList,
+    dealloc_list: DeallocatableList,
+
+    fn enclosed_env(self: *Self, env: *Environment) !*Environment {
+        var e = try env.enclosed();
+        try self.env_list.append(e);
+        return e;
+    }
+
     pub fn new(alloc: std.mem.Allocator) !Self {
+        var envs = EnvironmentList.init(alloc);
+        var deallocs = DeallocatableList.init(alloc);
+
         var globals = try alloc.create(Environment);
         globals.* = Environment.new(alloc);
+        try envs.append(globals);
 
-        var clock = try Clock.callable(alloc);
+        var heap_clock = try alloc.create(Clock);
+        heap_clock.* = Clock{ .alloc = alloc };
+        var clock = Callable.new(heap_clock);
+        try deallocs.append(Deallocatable.new(heap_clock));
 
         try globals.define(
             "clock",
@@ -246,11 +297,20 @@ pub const Interpreter = struct {
             .alloc = alloc,
             .environment = globals,
             .global_env = globals,
+            .env_list = envs,
+            .dealloc_list = deallocs,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.environment.deinit();
+        for (self.env_list.items) |env| {
+            env.deinit();
+        }
+        for (self.dealloc_list.items) |*de| {
+            de.deinit();
+        }
+        self.dealloc_list.deinit();
+        self.env_list.deinit();
     }
 
     fn eval_expr(self: *Self, expr: *Expr) anyerror!Value {
@@ -495,9 +555,9 @@ pub const Interpreter = struct {
             },
             .Block => |stmts| {
                 var prev = self.environment;
-                self.environment = try prev.enclosed();
+                self.environment = try self.enclosed_env(prev);
                 defer {
-                    self.environment.deinit();
+                    // self.environment.deinit();
                     self.environment = prev;
                 }
 
@@ -546,9 +606,9 @@ pub const Interpreter = struct {
             },
             .For => |val| {
                 var prev = self.environment;
-                self.environment = try prev.enclosed();
+                self.environment = try self.enclosed_env(prev);
                 defer {
-                    self.environment.deinit();
+                    // self.environment.deinit();
                     self.environment = prev;
                 }
 
@@ -595,10 +655,12 @@ pub const Interpreter = struct {
                     .alloc = self.alloc,
                     .params = func.params,
                     .body = func.body,
+                    .closure = try self.enclosed_env(self.environment),
                 };
-                var heap = try self.alloc.create(UserFn);
-                heap.* = f;
-                var function = .{ .Callable = Callable.new(heap) };
+                var heap_fn = try self.alloc.create(UserFn);
+                heap_fn.* = f;
+                try self.dealloc_list.append(Deallocatable.new(heap_fn));
+                var function = .{ .Callable = Callable.new(heap_fn) };
                 try self.environment.define(func.name, function);
             },
         }
