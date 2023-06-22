@@ -5,6 +5,48 @@ const LigErr = @import("./main.zig").LigErr;
 const Stmt = @import("./parser.zig").Stmt;
 const Expr = @import("./parser.zig").Expr;
 
+pub fn Rc(comptime T: anytype) type {
+    return struct {
+        const Self = @This();
+        alloc: std.mem.Allocator,
+        inner: T,
+        refcount: u32,
+
+        fn new(alloc: std.mem.Allocator, t: T) !*Self {
+            var self = try alloc.create(Self);
+            self.* = .{
+                .inner = t,
+                .alloc = alloc,
+                .refcount = 1,
+            };
+            return self;
+        }
+
+        fn clone(self: *Self) *Self {
+            self.refcount += 1;
+            return self;
+        }
+
+        fn deinit(self: *Self) void {
+            self.refcount -= 1;
+            std.debug.print("deinitttt {}\n", .{self.refcount});
+            if (self.refcount == 0) {
+                comptime var has_deinit = switch (@typeInfo(T)) {
+                    .Pointer => |p| @hasDecl(p.child, "deinit"),
+                    else => @hasDecl(T, "deinit"),
+                };
+                if (has_deinit) {
+                    self.inner.deinit(self.alloc);
+                }
+                if (@typeInfo(T) == .Pointer) {
+                    self.alloc.destroy(self.inner);
+                }
+                self.alloc.destroy(self);
+            }
+        }
+    };
+}
+
 pub const Value = union(enum) {
     String: []const u8,
     Number: f64,
@@ -36,12 +78,15 @@ pub const Value = union(enum) {
     }
 };
 
+pub const RcEnv = Rc(*Environment);
+
 pub const Environment = struct {
     const Self = @This();
+    const RcSelf = RcEnv;
     const ValueMap = std.StringHashMap(Value);
 
     values: ValueMap,
-    super: ?*Self,
+    super: ?*RcSelf,
 
     pub fn new(alloc: std.mem.Allocator) Self {
         return .{
@@ -50,21 +95,23 @@ pub const Environment = struct {
         };
     }
 
-    pub fn enclosed(self: *Self) !*Self {
-        var alloc = self.values.allocator;
+    pub fn enclosed_rc(self: *RcSelf) !*RcSelf {
+        var alloc = self.inner.values.allocator;
         var env = try alloc.create(Self);
-        env.* = .{ .values = ValueMap.init(alloc), .super = self };
-        return env;
+        env.* = .{ .values = ValueMap.init(alloc), .super = self.clone() };
+        return try RcSelf.new(alloc, env);
     }
 
-    pub fn deinit(self: *Self) void {
-        var alloc = self.values.allocator;
+    pub fn deinit(self: *Self, alloc: std.mem.Allocator) void {
+        if (self.super) |rc| {
+            rc.deinit();
+        }
         var iter = self.values.iterator();
         while (iter.next()) |v| {
+            std.debug.print("deallocating {s}\n", .{v.key_ptr.*});
             v.value_ptr.deinit(alloc);
         }
         self.values.deinit();
-        alloc.destroy(self);
     }
 
     pub fn define(self: *Self, name: []const u8, val: Value) !void {
@@ -80,7 +127,7 @@ pub const Environment = struct {
             return val;
         } else {
             if (self.super) |super| {
-                return super.get(name);
+                return super.inner.get(name);
             } else {
                 return error.UndefinedVariable;
             }
@@ -95,7 +142,7 @@ pub const Environment = struct {
             e.* = val;
         } else {
             if (self.super) |super| {
-                return super.set(name, val);
+                return super.inner.set(name, val);
             } else {
                 return error.UndefinedVariable;
             }
@@ -195,20 +242,21 @@ const UserFn = struct {
     alloc: std.mem.Allocator,
     params: [][]const u8,
     body: *Stmt,
+    closure: *RcEnv,
 
     fn arity(self: *Self) u8 {
         return @intCast(u8, self.params.len);
     }
     fn call(self: *Self, interpreter: *Interpreter, args: []Value) anyerror!Value {
         var prev_env = interpreter.environment;
-        interpreter.environment = try interpreter.global_env.enclosed();
+        interpreter.environment = try Environment.enclosed_rc(self.closure);
         defer {
             interpreter.environment.deinit();
             interpreter.environment = prev_env;
         }
 
         for (self.params) |param, i| {
-            try interpreter.environment.define(param, args[i]);
+            try interpreter.environment.inner.define(param, args[i]);
         }
 
         var r = try interpreter.evaluate_stmt(self.body);
@@ -228,29 +276,33 @@ const UserFn = struct {
 pub const Interpreter = struct {
     const Self = @This();
     alloc: std.mem.Allocator,
-    global_env: *Environment,
-    environment: *Environment,
+    global_env: *RcEnv,
+    environment: *RcEnv,
+
+    envs: EnvironmentList,
 
     pub fn new(alloc: std.mem.Allocator) !Self {
-        var globals = try alloc.create(Environment);
-        globals.* = Environment.new(alloc);
+        var globals_env = try alloc.create(Environment);
+        globals_env.* = Environment.new(alloc);
+        var globals = try RcEnv.new(alloc, globals_env);
 
         var clock = try Clock.callable(alloc);
 
-        try globals.define(
+        try globals.inner.define(
             "clock",
             .{ .Callable = clock },
         );
 
         return .{
             .alloc = alloc,
-            .environment = globals,
+            .environment = globals.clone(),
             .global_env = globals,
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.environment.deinit();
+        self.global_env.deinit();
     }
 
     fn eval_expr(self: *Self, expr: *Expr) anyerror!Value {
@@ -406,7 +458,7 @@ pub const Interpreter = struct {
                 return self.eval_expr(val);
             },
             .Variable => |name| {
-                return self.environment.get(name);
+                return self.environment.inner.get(name);
             },
             .Call => |val| {
                 var callee = try self.eval_expr(val.callee);
@@ -478,11 +530,11 @@ pub const Interpreter = struct {
                     value = try self.eval_expr(e);
                 }
 
-                try self.environment.define(val.name, value);
+                try self.environment.inner.define(val.name, value);
             },
             .Assign => |val| {
                 var value = try self.eval_expr(val.expr);
-                try self.environment.set(val.name, value);
+                try self.environment.inner.set(val.name, value);
             },
             .Break => return .Break,
             .Continue => return .Continue,
@@ -495,7 +547,7 @@ pub const Interpreter = struct {
             },
             .Block => |stmts| {
                 var prev = self.environment;
-                self.environment = try prev.enclosed();
+                self.environment = try Environment.enclosed_rc(prev);
                 defer {
                     self.environment.deinit();
                     self.environment = prev;
@@ -546,7 +598,7 @@ pub const Interpreter = struct {
             },
             .For => |val| {
                 var prev = self.environment;
-                self.environment = try prev.enclosed();
+                self.environment = try Environment.enclosed_rc(prev);
                 defer {
                     self.environment.deinit();
                     self.environment = prev;
@@ -595,11 +647,12 @@ pub const Interpreter = struct {
                     .alloc = self.alloc,
                     .params = func.params,
                     .body = func.body,
+                    .closure = self.environment, //.clone(),
                 };
                 var heap = try self.alloc.create(UserFn);
                 heap.* = f;
                 var function = .{ .Callable = Callable.new(heap) };
-                try self.environment.define(func.name, function);
+                try self.environment.inner.define(func.name, function);
             },
         }
         return .Void;
