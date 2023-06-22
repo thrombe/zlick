@@ -266,22 +266,20 @@ pub const Interpreter = struct {
     global_env: *Environment,
     environment: *Environment,
 
-    env_list: EnvironmentList,
     dealloc_list: DeallocatableList,
 
     fn enclosed_env(self: *Self, env: *Environment) !*Environment {
         var e = try env.enclosed();
-        try self.env_list.append(e);
+        try self.dealloc_list.append(Deallocatable.new(e));
         return e;
     }
 
     pub fn new(alloc: std.mem.Allocator) !Self {
-        var envs = EnvironmentList.init(alloc);
         var deallocs = DeallocatableList.init(alloc);
 
         var globals = try alloc.create(Environment);
         globals.* = Environment.new(alloc);
-        try envs.append(globals);
+        try deallocs.append(Deallocatable.new(globals));
 
         var heap_clock = try alloc.create(Clock);
         heap_clock.* = Clock{ .alloc = alloc };
@@ -297,20 +295,15 @@ pub const Interpreter = struct {
             .alloc = alloc,
             .environment = globals,
             .global_env = globals,
-            .env_list = envs,
             .dealloc_list = deallocs,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        for (self.env_list.items) |env| {
-            env.deinit();
-        }
         for (self.dealloc_list.items) |*de| {
             de.deinit();
         }
         self.dealloc_list.deinit();
-        self.env_list.deinit();
     }
 
     fn eval_expr(self: *Self, expr: *Expr) anyerror!Value {
