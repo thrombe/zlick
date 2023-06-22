@@ -7,6 +7,10 @@ pub const Printer = struct {
     const Self = @This();
     // TODO: no debug.print
 
+    pub fn deinit(self: *Self) void {
+        _ = self;
+    }
+
     pub fn print_stmt(self: *Self, stmt: *Stmt) anyerror!void {
         switch (stmt.*) {
             .Print => |expr| {

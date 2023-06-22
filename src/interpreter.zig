@@ -261,10 +261,12 @@ pub const Interpreter = struct {
     const Self = @This();
     const EnvironmentList = std.ArrayList(*Environment);
     const DeallocatableList = std.ArrayList(Deallocatable);
+    const ExprDepthMap = std.AutoHashMap(*Expr, usize);
 
     alloc: std.mem.Allocator,
     global_env: *Environment,
     environment: *Environment,
+    locals: ExprDepthMap,
 
     dealloc_list: DeallocatableList,
 
@@ -296,7 +298,52 @@ pub const Interpreter = struct {
             .environment = globals,
             .global_env = globals,
             .dealloc_list = deallocs,
+            .locals = ExprDepthMap.init(alloc),
         };
+    }
+
+    fn resolve(self: *Self, expr: *Expr, depth: usize) !void {
+        try self.locals.put(expr, depth);
+    }
+
+    fn assign(self: *Self, name: []const u8, val: Value, expr: *Expr) !void {
+        if (self.locals.get(expr)) |dist| {
+            var d = dist;
+            var env = self.environment;
+            while (env.super) |s| {
+                if (d == 0) {
+                    break;
+                }
+                env = s;
+                d -= 1;
+            }
+            if (d != 0) {
+                return error.BadDepth;
+            }
+            try env.set(name, val);
+        } else {
+            try self.global_env.set(name, val);
+        }
+    }
+
+    fn lookup_var(self: *Self, name: []const u8, expr: *Expr) !Value {
+        if (self.locals.get(expr)) |dist| {
+            var d = dist;
+            var env = self.environment;
+            while (env.super) |s| {
+                if (d == 0) {
+                    break;
+                }
+                env = s;
+                d -= 1;
+            }
+            if (d != 0) {
+                return error.BadDepth;
+            }
+            return try env.get(name);
+        } else {
+            return try self.global_env.get(name);
+        }
     }
 
     pub fn deinit(self: *Self) void {
@@ -304,6 +351,7 @@ pub const Interpreter = struct {
             de.deinit();
         }
         self.dealloc_list.deinit();
+        self.locals.deinit();
     }
 
     fn eval_expr(self: *Self, expr: *Expr) anyerror!Value {
@@ -459,7 +507,7 @@ pub const Interpreter = struct {
                 return self.eval_expr(val);
             },
             .Variable => |name| {
-                return self.environment.get(name);
+                return try self.lookup_var(name, expr);
             },
             .Call => |val| {
                 var callee = try self.eval_expr(val.callee);
@@ -485,11 +533,7 @@ pub const Interpreter = struct {
             else => {},
         }
 
-        if (callable) |cal| {
-            var c: Callable = cal;
-            // _ = c;
-            var u: u8 = c.arity();
-            _ = u;
+        if (callable) |*c| {
             if (c.arity() != args.len) {
                 return error.IncorrectNumberOfArgs;
             }
@@ -535,7 +579,7 @@ pub const Interpreter = struct {
             },
             .Assign => |val| {
                 var value = try self.eval_expr(val.expr);
-                try self.environment.set(val.name, value);
+                try self.assign(val.name, value, val.expr);
             },
             .Break => return .Break,
             .Continue => return .Continue,
@@ -648,7 +692,7 @@ pub const Interpreter = struct {
                     .alloc = self.alloc,
                     .params = func.params,
                     .body = func.body,
-                    .closure = try self.enclosed_env(self.environment),
+                    .closure = self.environment,
                 };
                 var heap_fn = try self.alloc.create(UserFn);
                 heap_fn.* = f;
@@ -742,6 +786,182 @@ pub const Interpreter = struct {
             .Return => |val| {
                 if (val.val) |v| {
                     self.freeall_expr(v);
+                }
+            },
+        }
+    }
+};
+
+pub const ScopeResolver = struct {
+    const Self = @This();
+    const Scope = std.StringHashMap(bool);
+    const ScopeList = std.ArrayList(Scope);
+
+    alloc: std.mem.Allocator,
+    scopes: ScopeList,
+    interpreter: *Interpreter,
+
+    pub fn new(alloc: std.mem.Allocator, interpreter: *Interpreter) Self {
+        return .{
+            .alloc = alloc,
+            .interpreter = interpreter,
+            .scopes = ScopeList.init(alloc),
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.scopes.deinit();
+    }
+
+    fn begin_scope(self: *Self) !void {
+        try self.scopes.append(Scope.init(self.alloc));
+    }
+
+    fn end_scope(self: *Self) void {
+        var scope = self.scopes.pop();
+        scope.deinit();
+    }
+
+    fn peek(self: *Self) *Scope {
+        return &self.scopes.items[self.scopes.items.len - 1];
+    }
+
+    fn declare(self: *Self, name: []const u8) !void {
+        if (self.scopes.items.len == 0) {
+            return;
+        }
+        try self.peek().put(name, false);
+    }
+
+    fn define(self: *Self, name: []const u8) !void {
+        if (self.scopes.items.len == 0) {
+            return;
+        }
+        try self.peek().put(name, true);
+    }
+
+    pub fn resolve_expr(self: *Self, expr: *Expr) !void {
+        switch (expr.*) {
+            .Variable => |name| {
+                if (self.scopes.items.len > 0) {
+                    if (self.peek().get(name)) |v| {
+                        if (!v) {
+                            return error.BadVarInitialiser;
+                        }
+                    }
+                }
+
+                for (self.scopes.items) |_, i| {
+                    var j = self.scopes.items.len - i - 1;
+                    if (self.scopes.items[j].contains(name)) {
+                        try self.interpreter.resolve(expr, i);
+                        break;
+                    }
+                }
+            },
+            .Binary => |val| {
+                try self.resolve_expr(val.left);
+                try self.resolve_expr(val.right);
+            },
+            .Unary => |val| {
+                try self.resolve_expr(val.oparand);
+            },
+            .Literal => {},
+            .Group => |val| {
+                try self.resolve_expr(val);
+            },
+            .Call => |val| {
+                try self.resolve_expr(val.callee);
+                for (val.args) |arg| {
+                    try self.resolve_expr(arg);
+                }
+            },
+        }
+    }
+
+    fn resolve_func(self: *Self, func: *Stmt) !void {
+        switch (func.*) {
+            .Function => |val| {
+                try self.begin_scope();
+                for (val.params) |param| {
+                    try self.define(param);
+                }
+                try self.resolve_stmt(val.body);
+                self.end_scope();
+            },
+            else => unreachable,
+        }
+    }
+
+    pub fn resolve_stmt(self: *Self, stmt: *Stmt) anyerror!void {
+        switch (stmt.*) {
+            .Block => |stmts| {
+                try self.begin_scope();
+                for (stmts) |s| {
+                    try self.resolve_stmt(s);
+                }
+                self.end_scope();
+            },
+            .Function => |func| {
+                try self.define(func.name);
+
+                try self.resolve_func(stmt);
+            },
+            .Let => |e| {
+                try self.declare(e.name);
+                if (e.init_expr) |ne| {
+                    try self.resolve_expr(ne);
+                }
+                try self.define(e.name);
+            },
+            .Assign => |v| {
+                try self.resolve_expr(v.expr);
+
+                for (self.scopes.items) |_, i| {
+                    var j = self.scopes.items.len - i - 1;
+                    if (self.scopes.items[j].contains(v.name)) {
+                        try self.interpreter.resolve(v.expr, i);
+                        break;
+                    }
+                }
+            },
+            .Print => |e| {
+                try self.resolve_expr(e);
+            },
+            .Expr => |e| {
+                try self.resolve_expr(e);
+            },
+            .If => |v| {
+                try self.resolve_expr(v.condition);
+                try self.resolve_stmt(v.if_block);
+                if (v.else_block) |b| {
+                    try self.resolve_stmt(b);
+                }
+            },
+            .Break, .Continue => {},
+            .While => |v| {
+                try self.resolve_expr(v.condition);
+                try self.resolve_stmt(v.block);
+            },
+            .For => |val| {
+                try self.begin_scope();
+                defer self.end_scope();
+
+                if (val.start) |s| {
+                    try self.resolve_stmt(s);
+                }
+                if (val.mid) |e| {
+                    try self.resolve_expr(e);
+                }
+                if (val.end) |s| {
+                    try self.resolve_stmt(s);
+                }
+
+                try self.resolve_stmt(val.block);
+            },
+            .Return => |val| {
+                if (val.val) |v| {
+                    try self.resolve_expr(v);
                 }
             },
         }

@@ -7,6 +7,7 @@ const Expr = @import("./parser.zig").Expr;
 const Token = @import("./parser.zig").Token;
 const Parser = @import("./parser.zig").Parser;
 const Interpreter = @import("./interpreter.zig").Interpreter;
+const ScopeResolver = @import("./interpreter.zig").ScopeResolver;
 const Printer = @import("./printer.zig").Printer;
 
 pub fn main() !void {
@@ -40,6 +41,12 @@ pub const LigErr = error{
     ExpectedPrimaryExpression,
     ExpectedRightParen,
     ExpectedLeftParen,
+    BadVarInitialiser,
+    ExpectedSemicolon,
+    ExpectedVariableName,
+    ExpectedLeftBrace,
+    ExpectedIdentifier,
+    ExpectedParameter,
 
     // runtime errors
     BadAddition,
@@ -48,10 +55,7 @@ pub const LigErr = error{
     BadDivision,
     BadNegation,
     BadComparison,
-    ExpectedSemicolon,
-    ExpectedVariableName,
     UndefinedVariable,
-    ExpectedLeftBrace,
     ExpectedBooleanExpression,
     BadBreak,
     BadContinue,
@@ -59,8 +63,7 @@ pub const LigErr = error{
     TooManyArguments,
     NotCallable,
     IncorrectNumberOfArgs,
-    ExpectedIdentifier,
-    ExpectedParameter,
+    BadDepth,
 };
 
 const Lig = struct {
@@ -128,16 +131,21 @@ const Lig = struct {
         defer parser.deinit();
 
         var printer = Printer{};
-        _ = printer;
+        defer printer.deinit();
 
         var interpreter = try Interpreter.new(alloc);
         defer interpreter.deinit();
+
+        var resolver = ScopeResolver.new(alloc, &interpreter);
+        defer resolver.deinit();
 
         var temp = std.ArrayList(*Stmt).init(alloc);
         defer temp.deinit();
 
         while (try parser.next_stmt()) |s| {
             // try printer.print_stmt(s);
+            try resolver.resolve_stmt(s);
+
             var r = interpreter.evaluate_stmt(s);
             try temp.append(s);
 
