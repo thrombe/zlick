@@ -12,6 +12,8 @@ pub const Value = union(enum) {
     None,
     Bool: bool,
     Callable: Callable,
+    Class: *Class,
+    Object: *Object,
 
     fn as_num(self: Value) ?f64 {
         switch (self) {
@@ -125,13 +127,11 @@ const Callable = struct {
     const Self = @This();
     pub const TypeArityFn = *const fn (self: *anyopaque) u8;
     pub const TypeCallFn = *const fn (self: *anyopaque, interpreter: *Interpreter, args: []Value) anyerror!Value;
-    pub const TypeDeinitFn = *const fn (self: *anyopaque) void;
 
     self: *anyopaque,
     vtable: *const struct {
         arityFn: TypeArityFn,
         callFn: TypeCallFn,
-        deinitFn: TypeDeinitFn,
     },
 
     pub fn arity(self: *Self) u8 {
@@ -141,10 +141,6 @@ const Callable = struct {
     }
     pub fn call(self: *Self, interpreter: *Interpreter, args: []Value) anyerror!Value {
         return self.vtable.callFn(self.self, interpreter, args);
-    }
-
-    pub fn deinit(self: *Self) void {
-        self.vtable.deinitFn(self.self);
     }
 
     pub fn new(val: anytype) Self {
@@ -162,7 +158,6 @@ const Callable = struct {
             .vtable = &.{
                 .arityFn = @ptrCast(Callable.TypeArityFn, &T.arity),
                 .callFn = @ptrCast(Callable.TypeCallFn, &T.call),
-                .deinitFn = @ptrCast(Callable.TypeDeinitFn, &T.deinit),
             },
         };
     }
@@ -170,7 +165,7 @@ const Callable = struct {
 
 const Deallocatable = struct {
     const Self = @This();
-    pub const TypeDeinitFn = *const fn (self: *anyopaque) void;
+    pub const TypeDeinitFn = *const fn (self: *anyopaque, alloc: std.mem.Allocator) void;
 
     self: *anyopaque,
     deinitFn: TypeDeinitFn,
@@ -192,14 +187,13 @@ const Deallocatable = struct {
         };
     }
 
-    pub fn deinit(self: *Self) void {
-        self.deinitFn(self.self);
+    pub fn deinit(self: *Self, alloc: std.mem.Allocator) void {
+        self.deinitFn(self.self, alloc);
     }
 };
 
 const Clock = struct {
     const Self = @This();
-    alloc: std.mem.Allocator,
 
     fn arity(_: *Self) u8 {
         return 0;
@@ -207,14 +201,12 @@ const Clock = struct {
     fn call(_: *Self, _: *Interpreter, _: []Value) anyerror!Value {
         return .{ .Number = @intToFloat(f64, std.time.milliTimestamp()) };
     }
-    fn deinit(self: *Self) void {
-        self.alloc.destroy(self);
+    fn deinit(self: *Self, alloc: std.mem.Allocator) void {
+        alloc.destroy(self);
     }
 
     pub fn callable(alloc: std.mem.Allocator) !Callable {
-        var self: Self = .{
-            .alloc = alloc,
-        };
+        var self: Self = .{};
         var heap = try alloc.create(Self);
         heap.* = self;
         return Callable.new(heap);
@@ -223,7 +215,6 @@ const Clock = struct {
 
 const UserFn = struct {
     const Self = @This();
-    alloc: std.mem.Allocator,
     params: [][]const u8,
     body: *Stmt,
 
@@ -253,8 +244,69 @@ const UserFn = struct {
         }
         return .None;
     }
-    fn deinit(self: *Self) void {
-        self.alloc.destroy(self);
+    fn deinit(self: *Self, alloc: std.mem.Allocator) void {
+        alloc.destroy(self);
+    }
+};
+
+const Class = struct {
+    const Self = @This();
+    const Methods = std.StringHashMap(Callable);
+
+    name: []const u8,
+    methods: Methods,
+
+    fn arity(_: *Self) u8 {
+        return 0;
+    }
+    fn call(self: *Self, interpreter: *Interpreter, _: []Value) anyerror!Value {
+        var ob = try interpreter.alloc.create(Object);
+        ob.* = Object.new(self, interpreter.alloc);
+        try interpreter.dealloc_list.append(Deallocatable.new(ob));
+        return .{ .Object = ob };
+    }
+
+    fn deinit(self: *Self, alloc: std.mem.Allocator) void {
+        self.methods.deinit();
+        alloc.destroy(self);
+    }
+
+    fn get_method(self: *Self, name: []const u8) ?Callable {
+        return self.methods.get(name);
+    }
+};
+
+const Object = struct {
+    const Self = @This();
+    const Fields = std.StringHashMap(Value);
+
+    class: *Class,
+    fields: Fields,
+
+    fn new(class: *Class, alloc: std.mem.Allocator) Self {
+        return .{
+            .class = class,
+            .fields = Fields.init(alloc),
+        };
+    }
+
+    fn deinit(self: *Self, alloc: std.mem.Allocator) void {
+        self.fields.deinit();
+        alloc.destroy(self);
+    }
+
+    pub fn get(self: *Self, name: []const u8) !Value {
+        if (self.fields.get(name)) |val| {
+            return val;
+        } else if (self.class.get_method(name)) |val| {
+            return .{ .Callable = val };
+        } else {
+            return error.UndefinedProperty;
+        }
+    }
+
+    pub fn set(self: *Self, name: []const u8, val: Value) !void {
+        try self.fields.put(name, val);
     }
 };
 
@@ -265,6 +317,10 @@ pub const Interpreter = struct {
     const ExprDepthMap = std.AutoHashMap(*Expr, usize);
 
     alloc: std.mem.Allocator,
+    // TODO: variables can be stored in a flat array as there is already a map (ExprDepthMap)
+    // that stores some information about variables. that could also store information
+    // about index of that variable in the array. (map has one entry associated with
+    // each usage of a variable (except global variables for some reason.))
     global_env: *Environment,
     environment: *Environment,
     locals: ExprDepthMap,
@@ -285,7 +341,7 @@ pub const Interpreter = struct {
         try deallocs.append(Deallocatable.new(globals));
 
         var heap_clock = try alloc.create(Clock);
-        heap_clock.* = Clock{ .alloc = alloc };
+        heap_clock.* = Clock{};
         var clock = Callable.new(heap_clock);
         try deallocs.append(Deallocatable.new(heap_clock));
 
@@ -349,7 +405,7 @@ pub const Interpreter = struct {
 
     pub fn deinit(self: *Self) void {
         for (self.dealloc_list.items) |*de| {
-            de.deinit();
+            de.deinit(self.alloc);
         }
         self.dealloc_list.deinit();
         self.locals.deinit();
@@ -522,6 +578,15 @@ pub const Interpreter = struct {
 
                 return try self.call(callee, args);
             },
+            .Get => |val| {
+                var obj = try self.eval_expr(val.object);
+                switch (obj) {
+                    .Object => |o| {
+                        return try o.get(val.name);
+                    },
+                    else => return error.NotObject,
+                }
+            },
         }
     }
 
@@ -530,6 +595,9 @@ pub const Interpreter = struct {
         switch (callee) {
             .Callable => |c| {
                 callable = c;
+            },
+            .Class => |class| {
+                callable = Callable.new(class);
             },
             else => {},
         }
@@ -563,6 +631,12 @@ pub const Interpreter = struct {
                     },
                     .Callable => {
                         std.debug.print("<native callable>", .{});
+                    },
+                    .Class => |class| {
+                        std.debug.print("<class {s}>", .{class.name});
+                    },
+                    .Object => |ob| {
+                        std.debug.print("<object of class {s}>", .{ob.class.name});
                     },
                 }
                 std.debug.print("\n", .{});
@@ -690,7 +764,6 @@ pub const Interpreter = struct {
             },
             .Function => |func| {
                 var f = UserFn{
-                    .alloc = self.alloc,
                     .params = func.params,
                     .body = func.body,
                     .closure = self.environment,
@@ -700,6 +773,38 @@ pub const Interpreter = struct {
                 try self.dealloc_list.append(Deallocatable.new(heap_fn));
                 var function = .{ .Callable = Callable.new(heap_fn) };
                 try self.environment.define(func.name, function);
+            },
+            .Class => |class| {
+                var methods = Class.Methods.init(self.alloc);
+
+                for (class.methods) |method| {
+                    var f = UserFn{
+                        .params = method.params,
+                        .body = method.body,
+                        .closure = self.environment,
+                    };
+                    var heap_fn = try self.alloc.create(UserFn);
+                    heap_fn.* = f;
+                    try self.dealloc_list.append(Deallocatable.new(heap_fn));
+                    var function = Callable.new(heap_fn);
+
+                    try methods.put(method.name, function);
+                }
+
+                var c = try self.alloc.create(Class);
+                c.* = .{ .name = class.name, .methods = methods };
+                try self.dealloc_list.append(Deallocatable.new(c));
+                try self.environment.define(class.name, .{ .Class = c });
+            },
+            .Set => |val| {
+                var obj = try self.eval_expr(val.object);
+                switch (obj) {
+                    .Object => |o| {
+                        var value = try self.eval_expr(val.value);
+                        try o.set(val.name, value);
+                    },
+                    else => return error.NotObject,
+                }
             },
         }
         return .Void;
@@ -727,6 +832,9 @@ pub const Interpreter = struct {
                     self.freeall_expr(arg);
                 }
                 self.alloc.free(val.args);
+            },
+            .Get => |val| {
+                self.freeall_expr(val.object);
             },
         }
     }
@@ -789,6 +897,17 @@ pub const Interpreter = struct {
                     self.freeall_expr(v);
                 }
             },
+            .Class => |val| {
+                for (val.methods) |method| {
+                    self.alloc.free(method.params);
+                    self.freeall_stmt(method.body);
+                }
+                self.alloc.free(val.methods);
+            },
+            .Set => |val| {
+                self.freeall_expr(val.value);
+                self.freeall_expr(val.object);
+            },
         }
     }
 };
@@ -801,6 +920,7 @@ pub const ScopeResolver = struct {
     const FuncType = enum {
         None,
         Function,
+        Method,
     };
     const ControlFlow = enum {
         While,
@@ -896,22 +1016,20 @@ pub const ScopeResolver = struct {
                     try self.resolve_expr(arg);
                 }
             },
+            .Get => |val| {
+                try self.resolve_expr(val.object);
+            },
         }
     }
 
-    fn resolve_func(self: *Self, func: *Stmt) !void {
-        switch (func.*) {
-            .Function => |val| {
-                try self.begin_scope();
-                defer self.end_scope();
+    fn resolve_func(self: *Self, func: Stmt.Function) !void {
+        try self.begin_scope();
+        defer self.end_scope();
 
-                for (val.params) |param| {
-                    try self.define(param);
-                }
-                try self.resolve_stmt(val.body);
-            },
-            else => unreachable,
+        for (func.params) |param| {
+            try self.define(param);
         }
+        try self.resolve_stmt(func.body);
     }
 
     pub fn resolve_stmt(self: *Self, stmt: *Stmt) anyerror!void {
@@ -934,7 +1052,7 @@ pub const ScopeResolver = struct {
 
                 try self.define(func.name);
 
-                try self.resolve_func(stmt);
+                try self.resolve_func(func);
             },
             .Let => |e| {
                 try self.declare(e.name);
@@ -952,6 +1070,19 @@ pub const ScopeResolver = struct {
                         try self.interpreter.resolve(v.expr, i);
                         break;
                     }
+                }
+            },
+            .Class => |class| {
+                var in_loop = self.in_loop;
+                self.in_loop = .None;
+                defer self.in_loop = in_loop;
+                var in_func = self.in_func;
+                self.in_func = .Method;
+                defer self.in_func = in_func;
+
+                try self.define(class.name);
+                for (class.methods) |method| {
+                    try self.resolve_func(method);
                 }
             },
             .Print => |e| {
@@ -1010,12 +1141,16 @@ pub const ScopeResolver = struct {
             .Return => |val| {
                 switch (self.in_func) {
                     .None => return error.BadReturn,
-                    .Function => {},
+                    .Function, .Method => {},
                 }
 
                 if (val.val) |v| {
                     try self.resolve_expr(v);
                 }
+            },
+            .Set => |val| {
+                try self.resolve_expr(val.value);
+                try self.resolve_expr(val.object);
             },
         }
     }

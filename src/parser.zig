@@ -40,6 +40,10 @@ pub const Expr = union(enum) {
         args: []*Expr,
         rparen: Token,
     },
+    Get: struct {
+        object: *Expr,
+        name: []const u8,
+    },
 };
 
 pub const Literal = union(enum) {
@@ -76,18 +80,29 @@ pub const Stmt = union(enum) {
         end: ?*Stmt,
         block: *Stmt,
     },
-    Function: struct {
-        name: []const u8,
-        params: [][]const u8,
-        body: *Stmt,
-    },
+    Function: Function,
     Return: struct {
         ret_token: Token,
         val: ?*Expr,
     },
+    Class: struct {
+        name: []const u8,
+        methods: []Function,
+    },
+    Set: struct {
+        object: *Expr,
+        name: []const u8,
+        value: *Expr,
+    },
     Block: []*Stmt,
     Break,
     Continue,
+
+    pub const Function = struct {
+        name: []const u8,
+        params: [][]const u8,
+        body: *Stmt,
+    };
 };
 
 pub const Parser = struct {
@@ -120,10 +135,11 @@ pub const Parser = struct {
     }
 
     pub fn next_stmt(self: *Self) !?*Stmt {
-        if (self.match_next(&[_]TokenType{.Eof})) {
+        if (self.match_next(.Eof)) {
             return null;
         }
         return self.declaration() catch |e| {
+            std.debug.print("{}\n", .{e});
             switch (e) {
                 error.ExpectedSemicolon, error.UnexpectedEOF, error.ExpectedPrimaryExpression, error.ExpectedRightParen => return null,
                 else => return e,
@@ -131,7 +147,16 @@ pub const Parser = struct {
         };
     }
 
-    fn match_next(self: *Self, tokens: []const TokenType) bool {
+    fn match_next(self: *Self, token: TokenType) bool {
+        if (self.tokens.len - 1 < self.curr) {
+            return false;
+        } else {
+            var tok = self.tokens[self.curr];
+            return @as(std.meta.Tag(TokenType), tok.tok) == token;
+        }
+    }
+
+    fn match_any(self: *Self, tokens: []const TokenType) bool {
         if (self.tokens.len - 1 < self.curr) {
             return false;
         } else {
@@ -142,11 +167,11 @@ pub const Parser = struct {
     fn assignment_or_expr_stmt(self: *Self) !*Stmt {
         var expr = try self.expression();
 
-        if (self.match_next(&[_]TokenType{.Equal})) {
+        if (self.match_next(.Equal)) {
             self.curr += 1;
 
             var right = try self.expression();
-            if (!self.match_next(&[_]TokenType{.Semicolon})) {
+            if (!self.match_next(.Semicolon)) {
                 return error.ExpectedSemicolon;
             }
             self.curr += 1;
@@ -159,9 +184,16 @@ pub const Parser = struct {
                     self.alloc.destroy(expr);
                     return stmt;
                 },
+                .Get => |val| {
+                    var stack_stmt = .{ .Set = .{ .object = val.object, .name = val.name, .value = right } };
+                    var stmt = try self.alloc.create(Stmt);
+                    stmt.* = stack_stmt;
+                    self.alloc.destroy(expr);
+                    return stmt;
+                },
                 else => return error.InvalidAssignmentTarget,
             }
-        } else if (self.match_next(&[_]TokenType{.Semicolon})) {
+        } else if (self.match_next(.Semicolon)) {
             self.curr += 1;
 
             var stmt = try self.alloc.create(Stmt);
@@ -174,12 +206,48 @@ pub const Parser = struct {
 
     fn declaration(self: *Self) !*Stmt {
         var stmt: *Stmt = undefined;
-        if (self.match_next(&[_]TokenType{.Let})) {
+        if (self.match_next(.Let)) {
             self.curr += 1;
             stmt = try self.var_declaration();
-        } else if (self.match_next(&[_]TokenType{.Fn})) {
+        } else if (self.match_next(.Fn)) {
             self.curr += 1;
             stmt = try self.function();
+        } else if (self.match_next(.Class)) {
+            self.curr += 1;
+
+            if (!self.match_next(.{ .Identifier = "" })) {
+                return error.ExpectedIdentifier;
+            }
+            var name = switch (self.tokens[self.curr].tok) {
+                .Identifier => |v| v,
+                else => unreachable,
+            };
+            self.curr += 1;
+            if (!self.match_next(.LeftBrace)) {
+                return error.ExpectedLeftBrace;
+            }
+            self.curr += 1;
+
+            var methods = std.ArrayList(Stmt.Function).init(self.alloc);
+            errdefer methods.deinit();
+
+            while (!self.match_any(&[_]TokenType{ .RightBrace, .Eof })) {
+                var fun = try self.function();
+                defer self.alloc.destroy(fun);
+
+                var func = switch (fun.*) {
+                    .Function => |f| f,
+                    else => unreachable,
+                };
+                try methods.append(func);
+            }
+            if (!self.match_next(.RightBrace)) {
+                return error.ExpectedRightBrace;
+            }
+            self.curr += 1;
+
+            stmt = try self.alloc.create(Stmt);
+            stmt.* = .{ .Class = .{ .name = name, .methods = methods.toOwnedSlice() } };
         } else {
             stmt = try self.statement();
         }
@@ -187,7 +255,7 @@ pub const Parser = struct {
     }
 
     fn function(self: *Self) !*Stmt {
-        if (!self.match_next(&[_]TokenType{.{ .Identifier = "" }})) {
+        if (!self.match_next(.{ .Identifier = "" })) {
             return error.ExpectedIdentifier;
         }
         var name = switch (self.tokens[self.curr].tok) {
@@ -196,7 +264,7 @@ pub const Parser = struct {
         };
         self.curr += 1;
 
-        if (!self.match_next(&[_]TokenType{.LeftParen})) {
+        if (!self.match_next(.LeftParen)) {
             return error.ExpectedLeftParen;
         }
         self.curr += 1;
@@ -204,7 +272,7 @@ pub const Parser = struct {
         var params = std.ArrayList([]const u8).init(self.alloc);
         errdefer params.deinit();
 
-        if (!self.match_next(&[_]TokenType{.RightParen})) {
+        if (!self.match_next(.RightParen)) {
             while (true) {
                 if (params.items.len >= 255) {
                     return error.TooManyArguments;
@@ -217,22 +285,22 @@ pub const Parser = struct {
                     },
                     else => return error.ExpectedParameter,
                 }
-                if (!self.match_next(&[_]TokenType{.Comma})) {
+                if (!self.match_next(.Comma)) {
                     break;
                 }
                 self.curr += 1;
-                if (self.match_next(&[_]TokenType{.RightParen})) {
+                if (self.match_next(.RightParen)) {
                     break;
                 }
             }
         }
 
-        if (!self.match_next(&[_]TokenType{.RightParen})) {
+        if (!self.match_next(.RightParen)) {
             return error.ExpectedRightParen;
         }
         self.curr += 1;
 
-        if (!self.match_next(&[_]TokenType{.LeftBrace})) {
+        if (!self.match_next(.LeftBrace)) {
             return error.ExpectedLeftBrace;
         }
         self.curr += 1;
@@ -246,7 +314,7 @@ pub const Parser = struct {
     }
 
     fn var_declaration(self: *Self) !*Stmt {
-        if (self.match_next(&[_]TokenType{.{ .Identifier = undefined }})) {
+        if (self.match_next(.{ .Identifier = undefined })) {
             var tok = self.tokens[self.curr];
             self.curr += 1;
             var name: []const u8 = undefined;
@@ -256,12 +324,12 @@ pub const Parser = struct {
             }
 
             var init_expr: ?*Expr = null;
-            if (self.match_next(&[_]TokenType{.Equal})) {
+            if (self.match_next(.Equal)) {
                 self.curr += 1;
                 init_expr = try self.expression();
             }
 
-            if (!self.match_next(&[_]TokenType{.Semicolon})) {
+            if (!self.match_next(.Semicolon)) {
                 return error.ExpectedSemicolon;
             }
             self.curr += 1;
@@ -275,22 +343,22 @@ pub const Parser = struct {
     }
 
     fn statement(self: *Self) anyerror!*Stmt {
-        if (self.match_next(&[_]TokenType{.Print})) {
+        if (self.match_next(.Print)) {
             self.curr += 1;
             return try self.print_stmt();
-        } else if (self.match_next(&[_]TokenType{.LeftBrace})) {
+        } else if (self.match_next(.LeftBrace)) {
             self.curr += 1;
 
             var stmts = try self.block();
             var stmt = try self.alloc.create(Stmt);
             stmt.* = .{ .Block = stmts };
             return stmt;
-        } else if (self.match_next(&[_]TokenType{.If})) {
+        } else if (self.match_next(.If)) {
             self.curr += 1;
 
             var condition = try self.expression();
 
-            if (!self.match_next(&[_]TokenType{.LeftBrace})) {
+            if (!self.match_next(.LeftBrace)) {
                 return error.ExpectedLeftBrace;
             }
             self.curr += 1;
@@ -301,14 +369,14 @@ pub const Parser = struct {
             var stmt = try self.alloc.create(Stmt);
             errdefer self.alloc.destroy(stmt);
 
-            if (self.match_next(&[_]TokenType{.Else})) {
+            if (self.match_next(.Else)) {
                 self.curr += 1;
 
-                if (self.match_next(&[_]TokenType{.If})) {
+                if (self.match_next(.If)) {
                     var other_if = try self.statement();
                     stmt.* = .{ .If = .{ .condition = condition, .if_block = if_block, .else_block = other_if } };
                     return stmt;
-                } else if (self.match_next(&[_]TokenType{.LeftBrace})) {
+                } else if (self.match_next(.LeftBrace)) {
                     self.curr += 1;
                     stmts = try self.block();
                     var else_block = try self.alloc.create(Stmt);
@@ -322,12 +390,12 @@ pub const Parser = struct {
                 stmt.* = .{ .If = .{ .condition = condition, .if_block = if_block, .else_block = null } };
                 return stmt;
             }
-        } else if (self.match_next(&[_]TokenType{.While})) {
+        } else if (self.match_next(.While)) {
             self.curr += 1;
 
             var condition = try self.expression();
 
-            if (!self.match_next(&[_]TokenType{.LeftBrace})) {
+            if (!self.match_next(.LeftBrace)) {
                 return error.ExpectedLeftBrace;
             }
             self.curr += 1;
@@ -339,40 +407,40 @@ pub const Parser = struct {
             var while_stmt = try self.alloc.create(Stmt);
             while_stmt.* = .{ .While = .{ .condition = condition, .block = blk } };
             return while_stmt;
-        } else if (self.match_next(&[_]TokenType{.For})) {
+        } else if (self.match_next(.For)) {
             self.curr += 1;
 
             var start: ?*Stmt = null;
-            if (self.match_next(&[_]TokenType{.Let})) {
+            if (self.match_next(.Let)) {
                 self.curr += 1;
 
                 start = try self.var_declaration();
-            } else if (self.match_next(&[_]TokenType{.Semicolon})) {
+            } else if (self.match_next(.Semicolon)) {
                 self.curr += 1;
             } else {
                 start = try self.assignment_or_expr_stmt();
             }
 
             var mid: ?*Expr = null;
-            if (self.match_next(&[_]TokenType{.Semicolon})) {
+            if (self.match_next(.Semicolon)) {
                 self.curr += 1;
             } else {
                 mid = try self.expression();
 
-                if (!self.match_next(&[_]TokenType{.Semicolon})) {
+                if (!self.match_next(.Semicolon)) {
                     return error.ExpectedSemicolon;
                 }
                 self.curr += 1;
             }
 
             var end: ?*Stmt = null;
-            if (self.match_next(&[_]TokenType{.Semicolon})) {
+            if (self.match_next(.Semicolon)) {
                 self.curr += 1;
             } else {
                 end = try self.assignment_or_expr_stmt();
             }
 
-            if (!self.match_next(&[_]TokenType{.LeftBrace})) {
+            if (!self.match_next(.LeftBrace)) {
                 return error.ExpectedLeftBrace;
             }
             self.curr += 1;
@@ -384,9 +452,9 @@ pub const Parser = struct {
             var for_stmt = try self.alloc.create(Stmt);
             for_stmt.* = .{ .For = .{ .start = start, .mid = mid, .end = end, .block = blk } };
             return for_stmt;
-        } else if (self.match_next(&[_]TokenType{.Break})) {
+        } else if (self.match_next(.Break)) {
             self.curr += 1;
-            if (!self.match_next(&[_]TokenType{.Semicolon})) {
+            if (!self.match_next(.Semicolon)) {
                 return error.ExpectedSemicolon;
             }
             self.curr += 1;
@@ -394,9 +462,9 @@ pub const Parser = struct {
             var s = try self.alloc.create(Stmt);
             s.* = .Break;
             return s;
-        } else if (self.match_next(&[_]TokenType{.Continue})) {
+        } else if (self.match_next(.Continue)) {
             self.curr += 1;
-            if (!self.match_next(&[_]TokenType{.Semicolon})) {
+            if (!self.match_next(.Semicolon)) {
                 return error.ExpectedSemicolon;
             }
             self.curr += 1;
@@ -404,14 +472,14 @@ pub const Parser = struct {
             var s = try self.alloc.create(Stmt);
             s.* = .Continue;
             return s;
-        } else if (self.match_next(&[_]TokenType{.Return})) {
+        } else if (self.match_next(.Return)) {
             self.curr += 1;
 
             var expr: ?*Expr = null;
-            if (!self.match_next(&[_]TokenType{.Semicolon})) {
+            if (!self.match_next(.Semicolon)) {
                 expr = try self.expression();
             }
-            if (!self.match_next(&[_]TokenType{.Semicolon})) {
+            if (!self.match_next(.Semicolon)) {
                 return error.ExpectedSemicolon;
             }
             var tok = self.tokens[self.curr];
@@ -427,11 +495,11 @@ pub const Parser = struct {
 
     fn block(self: *Self) ![]*Stmt {
         var stmts = std.ArrayList(*Stmt).init(self.alloc);
-        while (!self.match_next(&[_]TokenType{ .RightBrace, .Eof })) {
+        while (!self.match_any(&[_]TokenType{ .RightBrace, .Eof })) {
             try stmts.append(try self.declaration());
         }
-        if (!self.match_next(&[_]TokenType{.RightBrace})) {
-            return error.UnexpectedEOF;
+        if (!self.match_next(.RightBrace)) {
+            return error.ExpectedRightBrace;
         }
         self.curr += 1;
 
@@ -440,7 +508,7 @@ pub const Parser = struct {
 
     fn print_stmt(self: *Self) !*Stmt {
         var val = try self.expression();
-        if (!self.match_next(&[_]TokenType{.Semicolon})) {
+        if (!self.match_next(.Semicolon)) {
             return error.ExpectedSemicolon;
         }
         self.curr += 1;
@@ -451,7 +519,7 @@ pub const Parser = struct {
 
     // fn expr_stmt(self: *Self) !*Stmt {
     //     var val = try self.expression();
-    //     if (!self.match_next(&[_]TokenType{.Semicolon})) {
+    //     if (!self.match_next(.Semicolon)) {
     //         return error.ExpectedSemicolon;
     //     }
     //     self.curr += 1;
@@ -467,7 +535,7 @@ pub const Parser = struct {
     fn logic_or(self: *Self) anyerror!*Expr {
         var expr = try self.logic_and();
 
-        while (self.match_next(&[_]TokenType{.Or})) {
+        while (self.match_next(.Or)) {
             var operator = self.tokens[self.curr];
             self.curr += 1;
 
@@ -483,7 +551,7 @@ pub const Parser = struct {
     fn logic_and(self: *Self) anyerror!*Expr {
         var expr = try self.equality();
 
-        while (self.match_next(&[_]TokenType{.And})) {
+        while (self.match_next(.And)) {
             var operator = self.tokens[self.curr];
             self.curr += 1;
 
@@ -498,7 +566,7 @@ pub const Parser = struct {
 
     fn equality(self: *Self) !*Expr {
         var left = try self.comparison();
-        while (self.match_next(&[_]TokenType{ .BangEqual, .DoubleEqual })) {
+        while (self.match_any(&[_]TokenType{ .BangEqual, .DoubleEqual })) {
             var operator = self.tokens[self.curr];
 
             self.curr += 1;
@@ -516,7 +584,7 @@ pub const Parser = struct {
     fn comparison(self: *Self) !*Expr {
         var left = try self.term();
 
-        while (self.match_next(&[_]TokenType{ .Gt, .Gte, .Lt, .Lte })) {
+        while (self.match_any(&[_]TokenType{ .Gt, .Gte, .Lt, .Lte })) {
             var operator = self.tokens[self.curr];
 
             self.curr += 1;
@@ -533,9 +601,9 @@ pub const Parser = struct {
 
     fn term(self: *Self) !*Expr {
         var expr = try self.factor();
-        // std.debug.print("expr term {any} {} {any}\n", .{ expr, self.match_next(&[_]TokenType{ .Dash, .Plus }), self.tokens[self.curr] });
+        // std.debug.print("expr term {any} {} {any}\n", .{ expr, self.match_any(&[_]TokenType{ .Dash, .Plus }), self.tokens[self.curr] });
 
-        while (self.match_next(&[_]TokenType{ .Dash, .Plus })) {
+        while (self.match_any(&[_]TokenType{ .Dash, .Plus })) {
             var operator = self.tokens[self.curr];
             // std.debug.print("operator {any} \n", .{operator});
 
@@ -554,7 +622,7 @@ pub const Parser = struct {
     fn factor(self: *Self) !*Expr {
         var expr = try self.unary();
 
-        while (self.match_next(&[_]TokenType{ .Slash, .Star })) {
+        while (self.match_any(&[_]TokenType{ .Slash, .Star })) {
             var operator = self.tokens[self.curr];
 
             self.curr += 1;
@@ -570,7 +638,7 @@ pub const Parser = struct {
     }
 
     fn unary(self: *Self) !*Expr {
-        if (self.match_next(&[_]TokenType{ .Bang, .Dash })) {
+        if (self.match_any(&[_]TokenType{ .Bang, .Dash })) {
             var operator = self.tokens[self.curr];
             self.curr += 1;
 
@@ -589,10 +657,25 @@ pub const Parser = struct {
         var expr = try self.primary();
 
         while (true) {
-            if (self.match_next(&[_]TokenType{.LeftParen})) {
+            if (self.match_next(.LeftParen)) {
                 self.curr += 1;
 
                 expr = try self.finish_call(expr);
+            } else if (self.match_next(.Dot)) {
+                self.curr += 1;
+
+                if (!self.match_next(.{ .Identifier = "" })) {
+                    return error.ExpectedIdentifier;
+                }
+                var name = switch (self.tokens[self.curr].tok) {
+                    .Identifier => |n| n,
+                    else => unreachable,
+                };
+                self.curr += 1;
+
+                var e = .{ .Get = .{ .name = name, .object = expr } };
+                expr = try self.alloc.create(Expr);
+                expr.* = e;
             } else {
                 break;
             }
@@ -605,23 +688,23 @@ pub const Parser = struct {
         var args = std.ArrayList(*Expr).init(self.alloc);
         errdefer args.deinit();
 
-        if (!self.match_next(&[_]TokenType{.RightParen})) {
+        if (!self.match_next(.RightParen)) {
             while (true) {
                 if (args.items.len >= 255) {
                     return error.TooManyArguments;
                 }
                 try args.append(try self.expression());
-                if (!self.match_next(&[_]TokenType{.Comma})) {
+                if (!self.match_next(.Comma)) {
                     break;
                 }
                 self.curr += 1;
-                if (self.match_next(&[_]TokenType{.RightParen})) {
+                if (self.match_next(.RightParen)) {
                     break;
                 }
             }
         }
 
-        if (!self.match_next(&[_]TokenType{.RightParen})) {
+        if (!self.match_next(.RightParen)) {
             return error.ExpectedRightParen;
         }
         var rparen = self.tokens[self.curr];
@@ -637,7 +720,6 @@ pub const Parser = struct {
             self.warn(self.tokens[self.curr - 2], "expected primary expression");
             return LigErr.ExpectedPrimaryExpression;
         }
-        // std.debug.print("primary {any}\n", .{self.tokens[self.curr]});
         var tok = self.tokens[self.curr];
         self.curr += 1;
 
@@ -668,7 +750,6 @@ pub const Parser = struct {
                 return LigErr.ExpectedPrimaryExpression;
             },
         }
-        // std.debug.print("{any} {*} {any}\n", .{ tok.tok, expr, expr });
         return expr;
     }
 
@@ -701,7 +782,7 @@ pub const Parser = struct {
 // term           → factor ( ( "-" | "+" ) factor )* ;
 // factor         → unary ( ( "/" | "*" ) unary )* ;
 // unary          → ( "!" | "-" ) unary | call ;
-// call           → primary ( "(" arguments? ")" )* ;
+// call           → primary ( "(" arguments? ")" | "." IDENTIFIER )* ;
 // arguments      → expression ( "," expression )* ","? ;
 // primary        → NUMBER | STRING | "true" | "false" | "nil"
 //                | "(" expression ")"
@@ -710,7 +791,7 @@ pub const Parser = struct {
 
 // program        → declaration* EOF ;
 //
-// declaration    → varDecl | fnDecl | statement ;
+// declaration    → classDecl | varDecl | fnDecl | statement ;
 //
 // statement      → exprStmt | assignment | breakStmt | continueStmt
 //                | printStmt | ifStatement | whileStament | forStatemtnt | returnStmt
@@ -721,7 +802,7 @@ pub const Parser = struct {
 // ContinueStmt   → "continue" ";" ;
 // block          → "{" declaration* "}" ;
 // exprStmt       → expression ";" ;
-// assignment     → expression ( "=" expression )? ";" ;
+// assignment     → ( call "." )? IDENTIFIER ( "=" expression )? ";" ;
 // ifStatemtnt    → "if" expression block ( "else" (ifStatement | block) )? ;
 // whileStatement → "while" expression block ;
 // forStatement   → "for" ( varDecl | exprStmt | assignment | ";" ) expression? ";" (assignment | exprStmt)? block ;
@@ -729,4 +810,5 @@ pub const Parser = struct {
 // varDecl        → "var" IDENTIFIER ( "=" expression )? ";" ;
 // fnDecl         → "fn" function ;
 // function       → IDENTIFIER "(" parameters? ")" block ;
+// classDecl      → "class" IDENTIFIER "{" function* "}" ;
 

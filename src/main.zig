@@ -48,6 +48,7 @@ pub const LigErr = error{
     ExpectedIdentifier,
     ExpectedParameter,
     BadLetBinding,
+    ExpectedRightBrace,
 
     // runtime errors
     BadAddition,
@@ -65,6 +66,8 @@ pub const LigErr = error{
     NotCallable,
     IncorrectNumberOfArgs,
     BadDepth,
+    NotObject,
+    UndefinedProperty,
 };
 
 const Lig = struct {
@@ -141,12 +144,18 @@ const Lig = struct {
         defer resolver.deinit();
 
         var temp = std.ArrayList(*Stmt).init(alloc);
-        defer temp.deinit();
+        defer {
+            for (temp.items) |s| {
+                interpreter.freeall_stmt(s);
+            }
+            temp.deinit();
+        }
 
         while (try parser.next_stmt()) |s| {
             try temp.append(s);
 
             // try printer.print_stmt(s);
+
             resolver.resolve_stmt(s) catch |err| {
                 std.debug.print("{}\n", .{err});
                 self.had_err = true;
@@ -171,12 +180,6 @@ const Lig = struct {
                 self.had_err = true;
             }
         }
-
-        for (temp.items) |s| {
-            interpreter.freeall_stmt(s);
-        }
-        // std.debug.print("{any}\n", .{tokens.items});
-        // std.debug.print("{any}\n", .{expr});
     }
 
     fn report(self: *Self, line: usize, message: []const u8) void {

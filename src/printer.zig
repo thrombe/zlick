@@ -21,12 +21,12 @@ pub const Printer = struct {
                 try self.print_expr(expr);
             },
             .Let => |val| {
-                std.debug.print("(let {s}", .{val.name});
+                std.debug.print("( let {s}", .{val.name});
                 if (val.init_expr) |expr| {
                     std.debug.print(" = ", .{});
                     try self.print_expr(expr);
                 }
-                std.debug.print(")", .{});
+                std.debug.print(" )", .{});
             },
             .Assign => |val| {
                 std.debug.print("({s} = ", .{val.name});
@@ -40,6 +40,18 @@ pub const Printer = struct {
                 }
                 std.debug.print("}}", .{});
             },
+            .If => |val| {
+                _ = val;
+            },
+            .While => |val| {
+                _ = val;
+            },
+            .For => {},
+            .Return => {},
+            .Function => {},
+            .Class => {},
+            .Break => {},
+            .Continue => {},
         }
         std.debug.print("\n", .{});
     }
@@ -64,7 +76,7 @@ pub const Printer = struct {
                     .True => std.debug.print("true", .{}),
                     .False => std.debug.print("false", .{}),
                     .None => std.debug.print("none", .{}),
-                    .String => |str| std.debug.print("{s}", .{str}),
+                    .String => |str| std.debug.print("'{s}'", .{str}),
                     .Number => |num| std.debug.print("{s}", .{num}),
                 }
             },
@@ -75,6 +87,15 @@ pub const Printer = struct {
             },
             .Variable => |str| {
                 std.debug.print("(var {s})", .{str});
+            },
+            .Call => |c| {
+                try self.print_expr(c.callee);
+                std.debug.print("(", .{});
+                for (c.args) |arg| {
+                    std.debug.print(", ", .{});
+                    try self.print_expr(arg);
+                }
+                std.debug.print(")", .{});
             },
         }
     }
