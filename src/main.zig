@@ -117,7 +117,7 @@ const Lig = struct {
         }
     }
 
-    fn run(_: *Self, code: []const u8, alloc: std.mem.Allocator) !void {
+    fn run(self: *Self, code: []const u8, alloc: std.mem.Allocator) !void {
         var scanner = try Scanner.new(code, alloc);
         defer scanner.deinit();
 
@@ -149,8 +149,13 @@ const Lig = struct {
             // try printer.print_stmt(s);
             resolver.resolve_stmt(s) catch |err| {
                 std.debug.print("{}\n", .{err});
+                self.had_err = true;
                 continue;
             };
+
+            if (self.had_err) {
+                continue;
+            }
 
             var r = interpreter.evaluate_stmt(s);
 
@@ -163,6 +168,7 @@ const Lig = struct {
                 }
             } else |err| {
                 std.debug.print("{}\n", .{err});
+                self.had_err = true;
             }
         }
 
