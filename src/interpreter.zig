@@ -4,6 +4,7 @@ const TokenType = @import("./lexer.zig").TokenType;
 const LigErr = @import("./main.zig").LigErr;
 const Stmt = @import("./parser.zig").Stmt;
 const Expr = @import("./parser.zig").Expr;
+const dbg = std.debug.print;
 
 pub const Value = union(enum) {
     String: []const u8,
@@ -797,6 +798,19 @@ pub const ScopeResolver = struct {
     const Scope = std.StringHashMap(bool);
     const ScopeList = std.ArrayList(Scope);
 
+    const FuncType = enum {
+        None,
+        Function,
+    };
+    const ControlFlow = enum {
+        While,
+        For,
+        None,
+    };
+
+    in_func: FuncType,
+    in_loop: ControlFlow,
+
     alloc: std.mem.Allocator,
     scopes: ScopeList,
     interpreter: *Interpreter,
@@ -806,6 +820,8 @@ pub const ScopeResolver = struct {
             .alloc = alloc,
             .interpreter = interpreter,
             .scopes = ScopeList.init(alloc),
+            .in_func = .None,
+            .in_loop = .None,
         };
     }
 
@@ -909,6 +925,13 @@ pub const ScopeResolver = struct {
                 }
             },
             .Function => |func| {
+                var in_loop = self.in_loop;
+                self.in_loop = .None;
+                defer self.in_loop = in_loop;
+                var in_func = self.in_func;
+                self.in_func = .Function;
+                defer self.in_func = in_func;
+
                 try self.define(func.name);
 
                 try self.resolve_func(stmt);
@@ -944,12 +967,31 @@ pub const ScopeResolver = struct {
                     try self.resolve_stmt(b);
                 }
             },
-            .Break, .Continue => {},
+            .Continue => {
+                switch (self.in_loop) {
+                    .None => return error.BadContinue,
+                    .For, .While => {},
+                }
+            },
+            .Break => {
+                switch (self.in_loop) {
+                    .None => return error.BadBreak,
+                    .For, .While => {},
+                }
+            },
             .While => |v| {
+                var in_loop = self.in_loop;
+                self.in_loop = .While;
+                defer self.in_loop = in_loop;
+
                 try self.resolve_expr(v.condition);
                 try self.resolve_stmt(v.block);
             },
             .For => |val| {
+                var in_loop = self.in_loop;
+                self.in_loop = .For;
+                defer self.in_loop = in_loop;
+
                 try self.begin_scope();
                 defer self.end_scope();
 
@@ -966,6 +1008,11 @@ pub const ScopeResolver = struct {
                 try self.resolve_stmt(val.block);
             },
             .Return => |val| {
+                switch (self.in_func) {
+                    .None => return error.BadReturn,
+                    .Function => {},
+                }
+
                 if (val.val) |v| {
                     try self.resolve_expr(v);
                 }
