@@ -830,6 +830,10 @@ pub const ScopeResolver = struct {
         if (self.scopes.items.len == 0) {
             return;
         }
+
+        if (self.peek().contains(name)) {
+            return error.BadLetBinding;
+        }
         try self.peek().put(name, false);
     }
 
@@ -883,11 +887,12 @@ pub const ScopeResolver = struct {
         switch (func.*) {
             .Function => |val| {
                 try self.begin_scope();
+                defer self.end_scope();
+
                 for (val.params) |param| {
                     try self.define(param);
                 }
                 try self.resolve_stmt(val.body);
-                self.end_scope();
             },
             else => unreachable,
         }
@@ -897,10 +902,11 @@ pub const ScopeResolver = struct {
         switch (stmt.*) {
             .Block => |stmts| {
                 try self.begin_scope();
+                defer self.end_scope();
+
                 for (stmts) |s| {
                     try self.resolve_stmt(s);
                 }
-                self.end_scope();
             },
             .Function => |func| {
                 try self.define(func.name);

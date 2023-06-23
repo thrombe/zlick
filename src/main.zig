@@ -47,6 +47,7 @@ pub const LigErr = error{
     ExpectedLeftBrace,
     ExpectedIdentifier,
     ExpectedParameter,
+    BadLetBinding,
 
     // runtime errors
     BadAddition,
@@ -143,11 +144,15 @@ const Lig = struct {
         defer temp.deinit();
 
         while (try parser.next_stmt()) |s| {
+            try temp.append(s);
+
             // try printer.print_stmt(s);
-            try resolver.resolve_stmt(s);
+            resolver.resolve_stmt(s) catch |err| {
+                std.debug.print("{}\n", .{err});
+                continue;
+            };
 
             var r = interpreter.evaluate_stmt(s);
-            try temp.append(s);
 
             if (r) |res| {
                 switch (res) {
