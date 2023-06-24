@@ -50,6 +50,8 @@ pub const LigErr = error{
     BadLetBinding,
     ExpectedRightBrace,
     BadSelf,
+    ExpectedDot,
+    BadSuper,
 
     // runtime errors
     BadAddition,
@@ -70,6 +72,7 @@ pub const LigErr = error{
     NotObject,
     UndefinedProperty,
     BadInitializerReturn,
+    BadInheritance,
 };
 
 const Lig = struct {

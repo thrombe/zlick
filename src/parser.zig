@@ -45,6 +45,10 @@ pub const Expr = union(enum) {
         name: []const u8,
     },
     Self: Token,
+    Super: struct {
+        keyword: Token,
+        method: []const u8,
+    },
 };
 
 pub const Literal = union(enum) {
@@ -88,6 +92,7 @@ pub const Stmt = union(enum) {
     },
     Class: struct {
         name: []const u8,
+        super: ?[]const u8,
         methods: []Function,
     },
     Set: struct {
@@ -224,6 +229,19 @@ pub const Parser = struct {
                 else => unreachable,
             };
             self.curr += 1;
+            var super: ?[]const u8 = null;
+            if (self.match_next(.Lt)) {
+                self.curr += 1;
+
+                if (!self.match_next(.{ .Identifier = "" })) {
+                    return error.ExpectedIdentifier;
+                }
+                super = switch (self.tokens[self.curr].tok) {
+                    .Identifier => |superclass| superclass,
+                    else => unreachable,
+                };
+                self.curr += 1;
+            }
             if (!self.match_next(.LeftBrace)) {
                 return error.ExpectedLeftBrace;
             }
@@ -248,7 +266,7 @@ pub const Parser = struct {
             self.curr += 1;
 
             stmt = try self.alloc.create(Stmt);
-            stmt.* = .{ .Class = .{ .name = name, .methods = methods.toOwnedSlice() } };
+            stmt.* = .{ .Class = .{ .name = name, .methods = methods.toOwnedSlice(), .super = super } };
         } else {
             stmt = try self.statement();
         }
@@ -747,6 +765,22 @@ pub const Parser = struct {
             },
             .Identifier => |name| expr.* = .{ .Variable = name },
             .Self => expr.* = .{ .Self = tok },
+            .Super => {
+                if (!self.match_next(.Dot)) {
+                    return error.ExpectedDot;
+                }
+                self.curr += 1;
+                if (!self.match_next(.{ .Identifier = "" })) {
+                    return error.ExpectedIdentifier;
+                }
+                var method = switch (self.tokens[self.curr].tok) {
+                    .Identifier => |name| name,
+                    else => unreachable,
+                };
+                self.curr += 1;
+
+                expr.* = .{ .Super = .{ .keyword = tok, .method = method } };
+            },
             else => {
                 self.warn(tok, "expected primary expression");
                 return LigErr.ExpectedPrimaryExpression;
@@ -787,8 +821,7 @@ pub const Parser = struct {
 // call           → primary ( "(" arguments? ")" | "." IDENTIFIER )* ;
 // arguments      → expression ( "," expression )* ","? ;
 // primary        → NUMBER | STRING | "true" | "false" | "nil"
-//                | "(" expression ")"
-//                | IDENTIFIER ;
+//                | "(" expression ")" | IDENTIFIER | "super" "." IDENTIFIER ;
 // parameters     → IDENTIFIER ( "," IDENTIFIER )* ","? ;
 
 // program        → declaration* EOF ;
@@ -812,5 +845,5 @@ pub const Parser = struct {
 // varDecl        → "var" IDENTIFIER ( "=" expression )? ";" ;
 // fnDecl         → "fn" function ;
 // function       → IDENTIFIER "(" parameters? ")" block ;
-// classDecl      → "class" IDENTIFIER "{" function* "}" ;
+// classDecl      → "class" IDENTIFIER ( "<" IDENTIFIER )? "{" function* "}" ;
 

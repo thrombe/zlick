@@ -274,6 +274,7 @@ const Class = struct {
 
     name: []const u8,
     methods: Methods,
+    super: ?*Self,
 
     fn arity(self: *Self) u8 {
         if (self.methods.get("init")) |init| {
@@ -305,7 +306,13 @@ const Class = struct {
     }
 
     fn get_method(self: *Self, name: []const u8) ?*UserFn {
-        return self.methods.get(name);
+        if (self.methods.get(name)) |method| {
+            return method;
+        } else if (self.super) |super| {
+            return super.get_method(name);
+        }
+
+        return null;
     }
 };
 
@@ -436,21 +443,25 @@ pub const Interpreter = struct {
         }
     }
 
+    fn get_var_at_depth(self: *Self, name: []const u8, depth: usize) !Value {
+        var d = depth;
+        var env = self.environment;
+        while (env.super) |s| {
+            if (d == 0) {
+                break;
+            }
+            env = s;
+            d -= 1;
+        }
+        if (d != 0) {
+            return error.BadDepth;
+        }
+        return try env.get(name);
+    }
+
     fn lookup_var(self: *Self, name: []const u8, expr: *Expr) !Value {
         if (self.locals.get(expr)) |dist| {
-            var d = dist;
-            var env = self.environment;
-            while (env.super) |s| {
-                if (d == 0) {
-                    break;
-                }
-                env = s;
-                d -= 1;
-            }
-            if (d != 0) {
-                return error.BadDepth;
-            }
-            return try env.get(name);
+            return try self.get_var_at_depth(name, dist);
         } else {
             return try self.global_env.get(name);
         }
@@ -643,6 +654,21 @@ pub const Interpreter = struct {
             .Self => {
                 return try self.lookup_var("self", expr);
             },
+            .Super => |val| {
+                var dist = if (self.locals.get(expr)) |d| d else return error.UndefinedVariable;
+                var super = switch (try self.get_var_at_depth("super", dist)) {
+                    .Class => |c| c,
+                    else => unreachable,
+                };
+                var ob = switch (try self.get_var_at_depth("self", dist - 1)) {
+                    .Object => |o| o,
+                    else => unreachable,
+                };
+
+                var method = if (super.get_method(val.method)) |m| m else return error.UndefinedProperty;
+                var func = try ob.bound_fn(self, method);
+                return .{ .Callable = Callable.new(func) };
+            },
         }
     }
 
@@ -831,23 +857,42 @@ pub const Interpreter = struct {
                 try self.environment.define(func.name, function);
             },
             .Class => |class| {
+                var super: ?*Class = null;
+                if (class.super) |s| {
+                    super = switch (try self.eval_expr(&.{ .Variable = s })) {
+                        .Class => |c| c,
+                        else => return error.BadInheritance,
+                    };
+                }
+
                 var methods = Class.Methods.init(self.alloc);
 
-                for (class.methods) |method| {
-                    var f = UserFn{
-                        .params = method.params,
-                        .body = method.body,
-                        .closure = self.environment,
+                {
+                    var env = self.environment;
+                    if (super) |s| {
+                        self.environment = try self.enclosed_env(env);
+                        try self.environment.define("super", .{ .Class = s });
+                    }
+                    defer if (super) |_| {
+                        self.environment = env;
                     };
-                    var heap_fn = try self.alloc.create(UserFn);
-                    heap_fn.* = f;
-                    try self.dealloc_list.append(Deallocatable.new(heap_fn));
 
-                    try methods.put(method.name, heap_fn);
+                    for (class.methods) |method| {
+                        var f = UserFn{
+                            .params = method.params,
+                            .body = method.body,
+                            .closure = self.environment,
+                        };
+                        var heap_fn = try self.alloc.create(UserFn);
+                        heap_fn.* = f;
+                        try self.dealloc_list.append(Deallocatable.new(heap_fn));
+
+                        try methods.put(method.name, heap_fn);
+                    }
                 }
 
                 var c = try self.alloc.create(Class);
-                c.* = .{ .name = class.name, .methods = methods };
+                c.* = .{ .name = class.name, .methods = methods, .super = super };
                 try self.dealloc_list.append(Deallocatable.new(c));
                 try self.environment.define(class.name, .{ .Class = c });
             },
@@ -892,6 +937,7 @@ pub const Interpreter = struct {
                 self.freeall_expr(val.object);
             },
             .Self => {},
+            .Super => {},
         }
     }
 
@@ -987,6 +1033,7 @@ pub const ScopeResolver = struct {
     const ClassType = enum {
         None,
         Class,
+        Subclass,
     };
 
     in_func: FuncType,
@@ -1043,6 +1090,16 @@ pub const ScopeResolver = struct {
         try self.peek().put(name, true);
     }
 
+    fn resolve_local(self: *Self, name: []const u8, expr: *Expr) !void {
+        for (self.scopes.items) |_, i| {
+            var j = self.scopes.items.len - i - 1;
+            if (self.scopes.items[j].contains(name)) {
+                try self.interpreter.resolve(expr, i);
+                break;
+            }
+        }
+    }
+
     pub fn resolve_expr(self: *Self, expr: *Expr) !void {
         switch (expr.*) {
             .Variable => |name| {
@@ -1054,30 +1111,25 @@ pub const ScopeResolver = struct {
                     }
                 }
 
-                for (self.scopes.items) |_, i| {
-                    var j = self.scopes.items.len - i - 1;
-                    if (self.scopes.items[j].contains(name)) {
-                        try self.interpreter.resolve(expr, i);
-                        break;
-                    }
-                }
+                try self.resolve_local(name, expr);
             },
             .Self => {
                 switch (self.in_class) {
-                    .Class => switch (self.in_func) {
+                    .Class, .Subclass => switch (self.in_func) {
                         .Initializer, .Method, .Function => {},
                         .None => return error.BadSelf,
                     },
                     .None => return error.BadSelf,
                 }
 
-                for (self.scopes.items) |_, i| {
-                    var j = self.scopes.items.len - i - 1;
-                    if (self.scopes.items[j].contains("self")) {
-                        try self.interpreter.resolve(expr, i);
-                        break;
-                    }
+                try self.resolve_local("self", expr);
+            },
+            .Super => {
+                switch (self.in_class) {
+                    .Subclass => {},
+                    else => return error.BadSuper,
                 }
+                try self.resolve_local("super", expr);
             },
             .Binary => |val| {
                 try self.resolve_expr(val.left);
@@ -1164,6 +1216,24 @@ pub const ScopeResolver = struct {
                 defer self.in_class = in_class;
 
                 try self.define(class.name);
+
+                if (class.super) |super| {
+                    if (std.mem.eql(u8, class.name, super)) {
+                        return error.BadInheritance;
+                    }
+                    try self.resolve_expr(&.{ .Variable = super });
+                }
+
+                if (class.super) |_| {
+                    // needs a new scope as the other scope is created at each call. this one is created when a class
+                    // is declared.
+                    try self.begin_scope();
+                    try self.define("super");
+                    self.in_class = .Subclass;
+                }
+                defer if (class.super) |_| {
+                    self.end_scope();
+                };
 
                 try self.begin_scope();
                 defer self.end_scope();
