@@ -20,7 +20,7 @@ pub fn main() !void {
 
     const stdout = std.io.getStdOut().writer();
 
-    var lig = Lig.new();
+    var lig = Zlick.new();
 
     if (args.len > 2) {
         try stdout.print("lokx [script]\n", .{});
@@ -31,7 +31,7 @@ pub fn main() !void {
     }
 }
 
-pub const LigErr = error{
+pub const ZlickErr = error{
     // lexing errors
     UnexpectedChar,
     UnterminatedString,
@@ -75,7 +75,7 @@ pub const LigErr = error{
     BadInheritance,
 };
 
-const Lig = struct {
+const Zlick = struct {
     const Self = @This();
     had_err: bool,
 

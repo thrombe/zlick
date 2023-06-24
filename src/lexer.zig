@@ -1,6 +1,6 @@
 const std = @import("std");
 const Token = @import("./parser.zig").Token;
-const LigErr = @import("./main.zig").LigErr;
+const ZlickErr = @import("./main.zig").ZlickErr;
 
 pub const Scanner = struct {
     const Self = @This();
@@ -96,7 +96,7 @@ pub const Scanner = struct {
                     len += 1;
                 }
                 if (!end) {
-                    return LigErr.UnterminatedString;
+                    return error.UnterminatedString;
                 }
 
                 // TODO: unescaped string
@@ -144,7 +144,7 @@ pub const Scanner = struct {
                 t.tok = if (keywords.get(ident)) |tok| tok else .{ .Identifier = ident };
                 self.curr += len;
             },
-            else => return LigErr.UnexpectedChar,
+            else => return error.UnexpectedChar,
         }
 
         return t;

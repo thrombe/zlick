@@ -1,7 +1,6 @@
 const std = @import("std");
 
 const TokenType = @import("./lexer.zig").TokenType;
-const LigErr = @import("./main.zig").LigErr;
 
 pub const Token = struct {
     tok: TokenType,
@@ -136,7 +135,7 @@ pub const Parser = struct {
         if (self.tokens.len > self.curr - 1) {
             self.curr += 1;
         } else {
-            return LigErr.UnexpectedEOF;
+            return error.UnexpectedEOF;
         }
     }
 
@@ -737,7 +736,7 @@ pub const Parser = struct {
     fn primary(self: *Self) !*Expr {
         if (self.tokens.len - 1 < self.curr) {
             self.warn(self.tokens[self.curr - 2], "expected primary expression");
-            return LigErr.ExpectedPrimaryExpression;
+            return error.ExpectedPrimaryExpression;
         }
         var tok = self.tokens[self.curr];
         self.curr += 1;
@@ -757,7 +756,7 @@ pub const Parser = struct {
                     self.curr += 1;
                 } else {
                     self.warn(tok, "expected right paren");
-                    return LigErr.ExpectedRightParen;
+                    return error.ExpectedRightParen;
                 }
                 var stack_group: Expr = .{ .Group = expr };
                 expr = try self.alloc.create(Expr);
@@ -783,7 +782,7 @@ pub const Parser = struct {
             },
             else => {
                 self.warn(tok, "expected primary expression");
-                return LigErr.ExpectedPrimaryExpression;
+                return error.ExpectedPrimaryExpression;
             },
         }
         return expr;

@@ -1,7 +1,6 @@
 const std = @import("std");
 
 const TokenType = @import("./lexer.zig").TokenType;
-const LigErr = @import("./main.zig").LigErr;
 const Stmt = @import("./parser.zig").Stmt;
 const Expr = @import("./parser.zig").Expr;
 const dbg = std.debug.print;
@@ -491,7 +490,7 @@ pub const Interpreter = struct {
                                 }
                             }
                         }
-                        return LigErr.ExpectedBooleanExpression;
+                        return error.ExpectedBooleanExpression;
                     },
                     .Or => {
                         var v1 = try self.eval_expr(val.left);
@@ -505,7 +504,7 @@ pub const Interpreter = struct {
                                 }
                             }
                         }
-                        return LigErr.ExpectedBooleanExpression;
+                        return error.ExpectedBooleanExpression;
                     },
                     else => {},
                 }
@@ -518,7 +517,7 @@ pub const Interpreter = struct {
                                 return .{ .Number = n1 + n2 };
                             }
                         }
-                        return LigErr.BadAddition;
+                        return error.BadAddition;
                     },
                     .Dash => {
                         if (v1.as_num()) |n1| {
@@ -526,7 +525,7 @@ pub const Interpreter = struct {
                                 return .{ .Number = n1 - n2 };
                             }
                         }
-                        return LigErr.BadSubtraction;
+                        return error.BadSubtraction;
                     },
                     .Star => {
                         if (v1.as_num()) |n1| {
@@ -534,7 +533,7 @@ pub const Interpreter = struct {
                                 return .{ .Number = n1 * n2 };
                             }
                         }
-                        return LigErr.BadMultiplication;
+                        return error.BadMultiplication;
                     },
                     .Slash => {
                         if (v1.as_num()) |n1| {
@@ -542,7 +541,7 @@ pub const Interpreter = struct {
                                 return .{ .Number = n1 / n2 };
                             }
                         }
-                        return LigErr.BadDivision;
+                        return error.BadDivision;
                     },
                     .Gt => {
                         if (v1.as_num()) |n1| {
@@ -550,7 +549,7 @@ pub const Interpreter = struct {
                                 return .{ .Bool = n1 > n2 };
                             }
                         }
-                        return LigErr.BadComparison;
+                        return error.BadComparison;
                     },
                     .Gte => {
                         if (v1.as_num()) |n1| {
@@ -558,7 +557,7 @@ pub const Interpreter = struct {
                                 return .{ .Bool = n1 >= n2 };
                             }
                         }
-                        return LigErr.BadComparison;
+                        return error.BadComparison;
                     },
                     .Lt => {
                         if (v1.as_num()) |n1| {
@@ -566,7 +565,7 @@ pub const Interpreter = struct {
                                 return .{ .Bool = n1 < n2 };
                             }
                         }
-                        return LigErr.BadComparison;
+                        return error.BadComparison;
                     },
                     .Lte => {
                         if (v1.as_num()) |n1| {
@@ -574,7 +573,7 @@ pub const Interpreter = struct {
                                 return .{ .Bool = n1 <= n2 };
                             }
                         }
-                        return LigErr.BadComparison;
+                        return error.BadComparison;
                     },
                     .BangEqual => {
                         // TODO: support any type in == and !=
@@ -583,7 +582,7 @@ pub const Interpreter = struct {
                                 return .{ .Bool = n1 != n2 };
                             }
                         }
-                        return LigErr.BadComparison;
+                        return error.BadComparison;
                     },
                     .DoubleEqual => {
                         if (v1.as_num()) |n1| {
@@ -591,7 +590,7 @@ pub const Interpreter = struct {
                                 return .{ .Bool = n1 == n2 };
                             }
                         }
-                        return LigErr.BadComparison;
+                        return error.BadComparison;
                     },
                     else => unreachable,
                 }
@@ -603,13 +602,13 @@ pub const Interpreter = struct {
                         if (v.as_bool()) |b| {
                             return .{ .Bool = !b };
                         }
-                        return LigErr.BadNegation;
+                        return error.BadNegation;
                     },
                     .Dash => {
                         if (v.as_num()) |n| {
                             return .{ .Number = -n };
                         } else {
-                            return LigErr.BadNegation;
+                            return error.BadNegation;
                         }
                     },
                     else => unreachable,
