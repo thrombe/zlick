@@ -251,7 +251,7 @@ const UserFn = struct {
 
 const Class = struct {
     const Self = @This();
-    const Methods = std.StringHashMap(Callable);
+    const Methods = std.StringHashMap(*UserFn);
 
     name: []const u8,
     methods: Methods,
@@ -271,7 +271,7 @@ const Class = struct {
         alloc.destroy(self);
     }
 
-    fn get_method(self: *Self, name: []const u8) ?Callable {
+    fn get_method(self: *Self, name: []const u8) ?*UserFn {
         return self.methods.get(name);
     }
 };
@@ -295,11 +295,16 @@ const Object = struct {
         alloc.destroy(self);
     }
 
-    pub fn get(self: *Self, name: []const u8) !Value {
+    pub fn get(self: *Self, name: []const u8, interpreter: *Interpreter) !Value {
         if (self.fields.get(name)) |val| {
             return val;
         } else if (self.class.get_method(name)) |val| {
-            return .{ .Callable = val };
+            var func = try interpreter.alloc.create(UserFn);
+            func.* = val.*;
+            func.closure = try interpreter.enclosed_env(val.closure);
+            try func.closure.define("self", .{ .Object = self });
+            try interpreter.dealloc_list.append(Deallocatable.new(func));
+            return .{ .Callable = Callable.new(func) };
         } else {
             return error.UndefinedProperty;
         }
@@ -582,10 +587,13 @@ pub const Interpreter = struct {
                 var obj = try self.eval_expr(val.object);
                 switch (obj) {
                     .Object => |o| {
-                        return try o.get(val.name);
+                        return try o.get(val.name, self);
                     },
                     else => return error.NotObject,
                 }
+            },
+            .Self => {
+                return try self.lookup_var("self", expr);
             },
         }
     }
@@ -786,9 +794,8 @@ pub const Interpreter = struct {
                     var heap_fn = try self.alloc.create(UserFn);
                     heap_fn.* = f;
                     try self.dealloc_list.append(Deallocatable.new(heap_fn));
-                    var function = Callable.new(heap_fn);
 
-                    try methods.put(method.name, function);
+                    try methods.put(method.name, heap_fn);
                 }
 
                 var c = try self.alloc.create(Class);
@@ -836,6 +843,7 @@ pub const Interpreter = struct {
             .Get => |val| {
                 self.freeall_expr(val.object);
             },
+            .Self => {},
         }
     }
 
@@ -999,6 +1007,20 @@ pub const ScopeResolver = struct {
                     }
                 }
             },
+            .Self => {
+                switch (self.in_func) {
+                    .Function, .Method => {},
+                    .None => return error.BadSelf,
+                }
+
+                for (self.scopes.items) |_, i| {
+                    var j = self.scopes.items.len - i - 1;
+                    if (self.scopes.items[j].contains("self")) {
+                        try self.interpreter.resolve(expr, i);
+                        break;
+                    }
+                }
+            },
             .Binary => |val| {
                 try self.resolve_expr(val.left);
                 try self.resolve_expr(val.right);
@@ -1081,6 +1103,11 @@ pub const ScopeResolver = struct {
                 defer self.in_func = in_func;
 
                 try self.define(class.name);
+
+                try self.begin_scope();
+                defer self.end_scope();
+
+                try self.define("self");
                 for (class.methods) |method| {
                     try self.resolve_func(method);
                 }

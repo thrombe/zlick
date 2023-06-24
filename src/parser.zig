@@ -44,6 +44,7 @@ pub const Expr = union(enum) {
         object: *Expr,
         name: []const u8,
     },
+    Self: Token,
 };
 
 pub const Literal = union(enum) {
@@ -745,6 +746,7 @@ pub const Parser = struct {
                 expr.* = stack_group;
             },
             .Identifier => |name| expr.* = .{ .Variable = name },
+            .Self => expr.* = .{ .Self = tok },
             else => {
                 self.warn(tok, "expected primary expression");
                 return LigErr.ExpectedPrimaryExpression;

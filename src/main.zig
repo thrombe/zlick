@@ -49,6 +49,7 @@ pub const LigErr = error{
     ExpectedParameter,
     BadLetBinding,
     ExpectedRightBrace,
+    BadSelf,
 
     // runtime errors
     BadAddition,
