@@ -41,7 +41,7 @@ pub const LigErr = error{
     ExpectedPrimaryExpression,
     ExpectedRightParen,
     ExpectedLeftParen,
-    BadVarInitialiser,
+    BadVarInitializer,
     ExpectedSemicolon,
     ExpectedVariableName,
     ExpectedLeftBrace,
@@ -69,7 +69,7 @@ pub const LigErr = error{
     BadDepth,
     NotObject,
     UndefinedProperty,
-    BadInitialiserReturn,
+    BadInitializerReturn,
 };
 
 const Lig = struct {

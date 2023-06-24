@@ -976,6 +976,8 @@ pub const ScopeResolver = struct {
     const FuncType = enum {
         None,
         Function,
+        Method,
+        Initializer,
     };
     const ControlFlow = enum {
         While,
@@ -1047,7 +1049,7 @@ pub const ScopeResolver = struct {
                 if (self.scopes.items.len > 0) {
                     if (self.peek().get(name)) |v| {
                         if (!v) {
-                            return error.BadVarInitialiser;
+                            return error.BadVarInitializer;
                         }
                     }
                 }
@@ -1063,7 +1065,7 @@ pub const ScopeResolver = struct {
             .Self => {
                 switch (self.in_class) {
                     .Class => switch (self.in_func) {
-                        .Function => {},
+                        .Initializer, .Method, .Function => {},
                         .None => return error.BadSelf,
                     },
                     .None => return error.BadSelf,
@@ -1155,7 +1157,7 @@ pub const ScopeResolver = struct {
                 self.in_loop = .None;
                 defer self.in_loop = in_loop;
                 var in_func = self.in_func;
-                self.in_func = .Function;
+                self.in_func = .None;
                 defer self.in_func = in_func;
                 var in_class = self.in_class;
                 self.in_class = .Class;
@@ -1168,6 +1170,11 @@ pub const ScopeResolver = struct {
 
                 try self.define("self");
                 for (class.methods) |method| {
+                    if (std.mem.eql(u8, method.name, "init")) {
+                        self.in_func = .Initializer;
+                    } else {
+                        self.in_func = .Method;
+                    }
                     try self.resolve_func(method);
                 }
             },
@@ -1227,7 +1234,19 @@ pub const ScopeResolver = struct {
             .Return => |val| {
                 switch (self.in_func) {
                     .None => return error.BadReturn,
-                    .Function => {},
+                    .Method, .Function => {},
+                    .Initializer => {
+                        if (val.val) |v| {
+                            switch (v.*) {
+                                .Literal => |e| {
+                                    if (e != .None) {
+                                        return error.BadInitializerReturn;
+                                    }
+                                },
+                                else => return error.BadInitializerReturn,
+                            }
+                        }
+                    },
                 }
 
                 if (val.val) |v| {
