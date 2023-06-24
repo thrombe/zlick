@@ -69,6 +69,7 @@ pub const LigErr = error{
     BadDepth,
     NotObject,
     UndefinedProperty,
+    BadInitialiserReturn,
 };
 
 const Lig = struct {

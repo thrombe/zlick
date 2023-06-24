@@ -213,6 +213,25 @@ const Clock = struct {
     }
 };
 
+const InitialiserFn = struct {
+    const Self = @This();
+
+    inner: *UserFn,
+    fn arity(self: *Self) u8 {
+        return self.inner.arity();
+    }
+    fn deinit(self: *Self, alloc: std.mem.Allocator) void {
+        alloc.destroy(self);
+    }
+    fn call(self: *Self, interpterer: *Interpreter, args: []Value) anyerror!Value {
+        var ret = try self.inner.call(interpterer, args);
+        if (ret != .None) {
+            return error.BadInitialiserReturn;
+        } else {
+            return try self.inner.closure.get("self");
+        }
+    }
+};
 const UserFn = struct {
     const Self = @This();
     params: [][]const u8,
@@ -256,14 +275,28 @@ const Class = struct {
     name: []const u8,
     methods: Methods,
 
-    fn arity(_: *Self) u8 {
-        return 0;
+    fn arity(self: *Self) u8 {
+        if (self.methods.get("init")) |init| {
+            return init.arity();
+        } else {
+            return 0;
+        }
     }
-    fn call(self: *Self, interpreter: *Interpreter, _: []Value) anyerror!Value {
+    fn call(self: *Self, interpreter: *Interpreter, args: []Value) anyerror!Value {
         var ob = try interpreter.alloc.create(Object);
         ob.* = Object.new(self, interpreter.alloc);
         try interpreter.dealloc_list.append(Deallocatable.new(ob));
-        return .{ .Object = ob };
+        var object = .{ .Object = ob };
+
+        if (self.methods.get("init")) |init| {
+            var func = try ob.bound_fn(interpreter, init);
+            var ret = try func.call(interpreter, args);
+            if (ret != .None) {
+                return error.BadInitialiserReturn;
+            }
+        }
+
+        return object;
     }
 
     fn deinit(self: *Self, alloc: std.mem.Allocator) void {
@@ -299,12 +332,15 @@ const Object = struct {
         if (self.fields.get(name)) |val| {
             return val;
         } else if (self.class.get_method(name)) |val| {
-            var func = try interpreter.alloc.create(UserFn);
-            func.* = val.*;
-            func.closure = try interpreter.enclosed_env(val.closure);
-            try func.closure.define("self", .{ .Object = self });
-            try interpreter.dealloc_list.append(Deallocatable.new(func));
-            return .{ .Callable = Callable.new(func) };
+            var bound = try self.bound_fn(interpreter, val);
+            if (std.mem.eql(u8, name, "init")) {
+                var init = try interpreter.alloc.create(InitialiserFn);
+                init.* = InitialiserFn{ .inner = bound };
+                try interpreter.dealloc_list.append(Deallocatable.new(init));
+                return .{ .Callable = Callable.new(init) };
+            } else {
+                return .{ .Callable = Callable.new(bound) };
+            }
         } else {
             return error.UndefinedProperty;
         }
@@ -312,6 +348,18 @@ const Object = struct {
 
     pub fn set(self: *Self, name: []const u8, val: Value) !void {
         try self.fields.put(name, val);
+    }
+
+    pub fn bound_fn(self: *Self, interpreter: *Interpreter, function: *UserFn) !*UserFn {
+        var func = try interpreter.alloc.create(UserFn);
+        try interpreter.dealloc_list.append(Deallocatable.new(func));
+
+        func.* = function.*;
+
+        func.closure = try interpreter.enclosed_env(function.closure);
+        try func.closure.define("self", .{ .Object = self });
+
+        return func;
     }
 };
 
