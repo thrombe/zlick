@@ -928,16 +928,20 @@ pub const ScopeResolver = struct {
     const FuncType = enum {
         None,
         Function,
-        Method,
     };
     const ControlFlow = enum {
         While,
         For,
         None,
     };
+    const ClassType = enum {
+        None,
+        Class,
+    };
 
     in_func: FuncType,
     in_loop: ControlFlow,
+    in_class: ClassType,
 
     alloc: std.mem.Allocator,
     scopes: ScopeList,
@@ -950,6 +954,7 @@ pub const ScopeResolver = struct {
             .scopes = ScopeList.init(alloc),
             .in_func = .None,
             .in_loop = .None,
+            .in_class = .None,
         };
     }
 
@@ -1008,8 +1013,11 @@ pub const ScopeResolver = struct {
                 }
             },
             .Self => {
-                switch (self.in_func) {
-                    .Function, .Method => {},
+                switch (self.in_class) {
+                    .Class => switch (self.in_func) {
+                        .Function => {},
+                        .None => return error.BadSelf,
+                    },
                     .None => return error.BadSelf,
                 }
 
@@ -1099,8 +1107,11 @@ pub const ScopeResolver = struct {
                 self.in_loop = .None;
                 defer self.in_loop = in_loop;
                 var in_func = self.in_func;
-                self.in_func = .Method;
+                self.in_func = .Function;
                 defer self.in_func = in_func;
+                var in_class = self.in_class;
+                self.in_class = .Class;
+                defer self.in_class = in_class;
 
                 try self.define(class.name);
 
@@ -1168,7 +1179,7 @@ pub const ScopeResolver = struct {
             .Return => |val| {
                 switch (self.in_func) {
                     .None => return error.BadReturn,
-                    .Function, .Method => {},
+                    .Function => {},
                 }
 
                 if (val.val) |v| {
