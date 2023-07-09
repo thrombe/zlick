@@ -27,15 +27,6 @@ pub const Value = union(enum) {
             else => return null,
         }
     }
-
-    // fn deinit(self: *Value, _: std.mem.Allocator) void {
-    //     switch (self.*) {
-    //         .Callable => |*c| {
-    //             c.deinit();
-    //         },
-    //         else => {},
-    //     }
-    // }
 };
 
 pub const Environment = struct {
@@ -61,10 +52,6 @@ pub const Environment = struct {
 
     pub fn deinit(self: *Self) void {
         var alloc = self.values.allocator;
-        // var iter = self.values.iterator();
-        // while (iter.next()) |v| {
-        //     v.value_ptr.deinit(alloc);
-        // }
         self.values.deinit();
         alloc.destroy(self);
     }
@@ -119,9 +106,6 @@ pub const StmtResult = union(enum) {
     }
 };
 
-// - [vtable abstraction of some kind · Issue #130](https://github.com/ziglang/zig/issues/130)
-// - [zig/lib/std/heap/general_purpose_allocator.zig](https://github.com/ziglang/zig/blob/master/lib/std/heap/general_purpose_allocator.zig)
-// - [zig/lib/std/mem/Allocator.zig](https://github.com/ziglang/zig/blob/master/lib/std/mem/Allocator.zig)
 const Callable = struct {
     const Self = @This();
     pub const TypeArityFn = *const fn (self: *anyopaque) u8;
@@ -134,8 +118,6 @@ const Callable = struct {
     },
 
     pub fn arity(self: *Self) u8 {
-        // fn alloc(ctx: *anyopaque, len: usize, log2_ptr_align: u8, ret_addr: usize) ?[*]u8 {
-        //     const self = @ptrCast(*Self, @alignCast(@alignOf(Self), ctx));
         return self.vtable.arityFn(self.self);
     }
     pub fn call(self: *Self, interpreter: *Interpreter, args: []Value) anyerror!Value {
@@ -173,7 +155,6 @@ const Deallocatable = struct {
         const Ptr = @TypeOf(val);
         const ptr_info = @typeInfo(Ptr);
 
-        // /usr/lib/zig/std/builtin.zig
         std.debug.assert(ptr_info == .Pointer);
         const T = switch (ptr_info) {
             .Pointer => |info| info.child,
@@ -699,7 +680,24 @@ pub const Interpreter = struct {
                 var val = try self.eval_expr(expr);
                 switch (val) {
                     .String => |str| {
-                        std.debug.print("{s}", .{str});
+                        var escaped = false;
+                        for (str) |ch| {
+                            switch (ch) {
+                                '\\' => {
+                                    escaped = true;
+                                    continue;
+                                },
+                                'n' => {
+                                    if (escaped) {
+                                        std.debug.print("\n", .{});
+                                        escaped = false;
+                                        continue;
+                                    }
+                                },
+                                else => {},
+                            }
+                            std.debug.print("{u}", .{ch});
+                        }
                     },
                     .Number => |num| {
                         std.debug.print("{}", .{num});
@@ -720,7 +718,7 @@ pub const Interpreter = struct {
                         std.debug.print("<object of class {s}>", .{ob.class.name});
                     },
                 }
-                std.debug.print("\n", .{});
+                // std.debug.print("\n", .{});
             },
             .Expr => |expr| {
                 _ = try self.eval_expr(expr);

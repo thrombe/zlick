@@ -111,13 +111,11 @@ const Zlick = struct {
 
         var gpa = std.heap.GeneralPurposeAllocator(.{}){};
         const alloc = gpa.allocator();
-        // OOF: idk why it returns a bool
         defer _ = gpa.deinit();
 
         var str = try f.readToEndAlloc(alloc, 10_000_000);
         defer alloc.free(str);
 
-        // std.debug.print("{s}\n", .{str});
         try self.run(str, alloc);
 
         if (self.had_err) {

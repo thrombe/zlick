@@ -8,14 +8,9 @@ pub const Token = struct {
 
     fn match(self: *Token, others: []const TokenType) bool {
         for (others) |typ| {
-            // std.testing.expectEqual
-            // return std.mem.allEqual(TokenType, &[_]TokenType{typ}, self.tok);
             if (@as(std.meta.Tag(TokenType), self.tok) == typ) {
                 return true;
             }
-            // if (self.tok == typ) {
-            //     return true;
-            // }
         }
         return false;
     }
@@ -658,17 +653,6 @@ pub const Parser = struct {
         return stmt;
     }
 
-    // fn expr_stmt(self: *Self) !*Stmt {
-    //     var val = try self.expression();
-    //     if (!self.match_next(.Semicolon)) {
-    //         return error.ExpectedSemicolon;
-    //     }
-    //     self.curr += 1;
-    //     var stmt = try self.alloc.create(Stmt);
-    //     stmt.* = .{ .Expr = val };
-    //     return stmt;
-    // }
-
     fn expression(self: *Self) anyerror!*Expr {
         return try self.logic_or();
     }
@@ -715,7 +699,6 @@ pub const Parser = struct {
             var operator = self.tokens[self.curr];
 
             self.curr += 1;
-            // try self.nom();
 
             var right = try self.comparison();
             var stack_left = .{ .Binary = .{ .left = left, .operator = operator, .right = right } };
@@ -747,12 +730,10 @@ pub const Parser = struct {
 
     fn term(self: *Self) !*Expr {
         var expr = try self.factor();
-        // std.debug.print("expr term {any} {} {any}\n", .{ expr, self.match_any(&[_]TokenType{ .Dash, .Plus }), self.tokens[self.curr] });
         errdefer expr.free(self.alloc);
 
         while (self.match_any(&[_]TokenType{ .Dash, .Plus })) {
             var operator = self.tokens[self.curr];
-            // std.debug.print("operator {any} \n", .{operator});
 
             self.curr += 1;
 
