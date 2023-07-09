@@ -1,0 +1,21 @@
+
+
+fn counter() {
+	let i = 0;
+
+	// this function captures it's environment
+	fn count() {
+		i = i+1;
+		return i;
+	}
+
+	return count;
+}
+
+let c = counter();
+
+for let i = 0; i < 9; i = i+1; {
+	print c();
+	print "\n";
+}
+

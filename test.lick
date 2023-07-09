@@ -1,0 +1,206 @@
+
+
+
+
+// class A {
+//   method() {
+//     print "A method";
+//   }
+// }
+
+// class B < A {
+//   method() {
+//     print "B method";
+//   }
+
+//   test() {
+//     super.method();
+//   }
+// }
+
+// class C < B {}
+
+// C().test();
+
+// factorial.lick
+// inheritance.lick
+// while_loop.lick
+// nested_scopes.lick
+// counter.lick
+
+print("lol\n");
+let i = 5;
+while (((( i > 0)))) {
+	i = i- 1;
+	print i;
+	print " ";
+}
+print "\n";
+
+// class Box {
+// 	init() {
+// 		self.size = 2;
+// 	}
+
+// 	area() {
+// 		return self.size * self.size;
+// 		// return self;
+// 	}
+// }
+
+// class Rect < Box {
+// 	area() {
+// 		print "hehe\n";
+// 		return super.area();
+// 	}
+// }
+
+// print "some text\n";
+// print Rect().init().area();
+// print "\n";
+
+
+
+// class A {
+// 	init(i) {
+// 		self.i = i;
+// 	}
+// 	foo() {
+// 		print "A";
+// 		self.i = self.i + 1;
+// 		print self.i;
+// 	}
+// }
+// class B {
+// 	init() {
+// 		self.i = 0;
+// 		return None;
+// 	}
+// 	foo() {
+// 		print "B";
+// 		self.i = self.i - 1;
+// 		print self.i;
+// 	}
+// }
+
+// let a = A(0);
+// let b = B();
+
+// print a.init(3);
+
+// for let i = 0; i < 10; i = i + 1; {
+// 	a.foo();
+
+// 	let t = a;
+// 	a = b;
+// 	b = t;
+// }
+
+
+// print "hello world";
+
+// fn counter() {
+// 	let i = 0;
+// 	fn count() {
+// 		i = i+1;
+// 		return i;
+// 	}
+
+// 	let j = "lucia";
+
+// 	return count;
+// }
+
+// let c = counter();
+// for let i = 0; i < 9; i = i+1; {
+// 	print c();
+// }
+
+// print counter()();
+
+
+// {
+// 	let a = "global";
+// 	{
+// 	  fn showA() {
+// 	    print a;
+// 	  }
+
+// 	  showA();
+// 	  let a = "block";
+// 	  showA();
+// 	}
+// }
+
+
+// print "scope test start";
+
+// {
+// 	print "scope test";
+// 	print a;
+// 	let a = 23;
+// 	print a;
+// }
+
+// print a;
+
+// if false or true and false or false {
+// 	print "a";
+// } else if 4 > 34 - 32 {
+// 	print "b";
+// } else {
+// 	print "c";
+// }
+
+// let n = 9;
+
+// while n>0 {
+// 	n = n - 1;
+// 	print n;
+// }
+
+// for let m=0;m<3;m = m+1; {
+// 	print m;
+// }
+
+// n = 6;
+// for ;n>0;; {
+// 	n = n-1;
+// 	if n < 3 and n>1 {
+// 		continue;
+// 	}
+// 	print n;
+// }
+
+
+// print clock();
+
+// let ligma;
+
+// fn main(lol) {
+// 	print clock();
+// 	print "main lol";
+// 	print lol;
+
+// 	fn lame() {
+// 		let lmao;
+// 		print "lame";
+// 	}
+
+// 	ligma = clock();
+
+// 	lame();
+// }
+// main(878);
+
+// print main(888);
+
+// fn fib(n) {
+// 	if n <= 1 {
+// 		return n;
+// 	} else {
+// 		return fib(n-2) + fib(n-1);
+// 	}
+// }
+
+// print fib(8);

@@ -1,0 +1,35 @@
+
+class Shape {
+  init(color) {
+    self.color = color;
+  }
+  
+  draw() {
+    print "Drawing a shape of color ";
+	print self.color;
+    print "\n";
+  }
+}
+
+class Circle < Shape {
+  init(color, radius) {
+    super.init(color);
+    self.radius = radius;
+  }
+  
+  draw() {
+    print "Drawing a circle of color ";
+	print self.color;
+	print " and radius ";
+	print self.radius;
+    print "\n";
+  }
+}
+
+let shape = Shape("red");
+let circle = Circle("blue", 5);
+
+print "\n";
+shape.draw();
+circle.draw();
+
