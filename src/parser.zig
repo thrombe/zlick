@@ -22,6 +22,8 @@ pub const Token = struct {
 };
 
 pub const Expr = union(enum) {
+    const Self = @This();
+
     Literal: Literal,
     Group: *Expr,
     Variable: []const u8,
@@ -48,17 +50,50 @@ pub const Expr = union(enum) {
         keyword: Token,
         method: []const u8,
     },
-};
 
-pub const Literal = union(enum) {
-    True,
-    False,
-    None,
-    Number: []const u8,
-    String: []const u8,
+    pub const Literal = union(enum) {
+        True,
+        False,
+        None,
+        Number: []const u8,
+        String: []const u8,
+    };
+
+    pub fn free(self: *Self, alloc: std.mem.Allocator) void {
+        defer alloc.destroy(self);
+
+        switch (self.*) {
+            .Binary => |val| {
+                val.left.free(alloc);
+                val.right.free(alloc);
+            },
+            .Unary => |val| {
+                val.oparand.free(alloc);
+            },
+            .Literal => {},
+            .Group => |val| {
+                val.free(alloc);
+            },
+            .Variable => {},
+            .Call => |val| {
+                val.callee.free(alloc);
+                for (val.args) |arg| {
+                    arg.free(alloc);
+                }
+                alloc.free(val.args);
+            },
+            .Get => |val| {
+                val.object.free(alloc);
+            },
+            .Self => {},
+            .Super => {},
+        }
+    }
 };
 
 pub const Stmt = union(enum) {
+    const Self = @This();
+
     Expr: *Expr,
     Print: *Expr,
     Let: struct {
@@ -108,6 +143,78 @@ pub const Stmt = union(enum) {
         params: [][]const u8,
         body: *Stmt,
     };
+
+    pub fn free(self: *Self, alloc: std.mem.Allocator) void {
+        defer alloc.destroy(self);
+
+        switch (self.*) {
+            .Print => |e| {
+                e.free(alloc);
+            },
+            .Expr => |e| {
+                e.free(alloc);
+            },
+            .Let => |e| {
+                if (e.init_expr) |ne| {
+                    ne.free(alloc);
+                }
+            },
+            .Assign => |v| {
+                v.expr.free(alloc);
+            },
+            .Block => |stmts| {
+                defer alloc.free(stmts);
+                for (stmts) |s| {
+                    s.free(alloc);
+                }
+            },
+            .If => |v| {
+                v.condition.free(alloc);
+                v.if_block.free(alloc);
+                if (v.else_block) |b| {
+                    b.free(alloc);
+                }
+            },
+            .Break, .Continue => {},
+            .While => |v| {
+                v.condition.free(alloc);
+                v.block.free(alloc);
+            },
+            .For => |val| {
+                if (val.start) |s| {
+                    s.free(alloc);
+                }
+                if (val.mid) |e| {
+                    e.free(alloc);
+                }
+                if (val.end) |s| {
+                    s.free(alloc);
+                }
+
+                val.block.free(alloc);
+            },
+            .Function => |func| {
+                alloc.free(func.params);
+                func.body.free(alloc);
+            },
+            .Return => |val| {
+                if (val.val) |v| {
+                    v.free(alloc);
+                }
+            },
+            .Class => |val| {
+                for (val.methods) |method| {
+                    alloc.free(method.params);
+                    method.body.free(alloc);
+                }
+                alloc.free(val.methods);
+            },
+            .Set => |val| {
+                val.value.free(alloc);
+                val.object.free(alloc);
+            },
+        }
+    }
 };
 
 pub const Parser = struct {
@@ -171,11 +278,14 @@ pub const Parser = struct {
 
     fn assignment_or_expr_stmt(self: *Self) !*Stmt {
         var expr = try self.expression();
+        errdefer expr.free(self.alloc);
 
         if (self.match_next(.Equal)) {
             self.curr += 1;
 
             var right = try self.expression();
+            errdefer right.free(self.alloc);
+
             if (!self.match_next(.Semicolon)) {
                 return error.ExpectedSemicolon;
             }
@@ -223,10 +333,7 @@ pub const Parser = struct {
             if (!self.match_next(.{ .Identifier = "" })) {
                 return error.ExpectedIdentifier;
             }
-            var name = switch (self.tokens[self.curr].tok) {
-                .Identifier => |v| v,
-                else => unreachable,
-            };
+            var name = self.tokens[self.curr].tok.Identifier;
             self.curr += 1;
             var super: ?[]const u8 = null;
             if (self.match_next(.Lt)) {
@@ -235,10 +342,7 @@ pub const Parser = struct {
                 if (!self.match_next(.{ .Identifier = "" })) {
                     return error.ExpectedIdentifier;
                 }
-                super = switch (self.tokens[self.curr].tok) {
-                    .Identifier => |superclass| superclass,
-                    else => unreachable,
-                };
+                super = self.tokens[self.curr].tok.Identifier;
                 self.curr += 1;
             }
             if (!self.match_next(.LeftBrace)) {
@@ -247,16 +351,18 @@ pub const Parser = struct {
             self.curr += 1;
 
             var methods = std.ArrayList(Stmt.Function).init(self.alloc);
-            errdefer methods.deinit();
+            errdefer {
+                for (methods.items) |method| {
+                    method.body.free(self.alloc);
+                }
+                methods.deinit();
+            }
 
             while (!self.match_any(&[_]TokenType{ .RightBrace, .Eof })) {
                 var fun = try self.function();
                 defer self.alloc.destroy(fun);
 
-                var func = switch (fun.*) {
-                    .Function => |f| f,
-                    else => unreachable,
-                };
+                var func = fun.Function;
                 try methods.append(func);
             }
             if (!self.match_next(.RightBrace)) {
@@ -276,10 +382,7 @@ pub const Parser = struct {
         if (!self.match_next(.{ .Identifier = "" })) {
             return error.ExpectedIdentifier;
         }
-        var name = switch (self.tokens[self.curr].tok) {
-            .Identifier => |name| name,
-            else => unreachable,
-        };
+        var name = self.tokens[self.curr].tok.Identifier;
         self.curr += 1;
 
         if (!self.match_next(.LeftParen)) {
@@ -296,10 +399,11 @@ pub const Parser = struct {
                     return error.TooManyArguments;
                 }
                 var param = try self.expression();
+                defer self.alloc.destroy(param);
+
                 switch (param.*) {
                     .Variable => |p| {
                         try params.append(p);
-                        defer self.alloc.destroy(param);
                     },
                     else => return error.ExpectedParameter,
                 }
@@ -335,13 +439,11 @@ pub const Parser = struct {
         if (self.match_next(.{ .Identifier = undefined })) {
             var tok = self.tokens[self.curr];
             self.curr += 1;
-            var name: []const u8 = undefined;
-            switch (tok.tok) {
-                .Identifier => |str| name = str,
-                else => unreachable,
-            }
+            var name = tok.tok.Identifier;
 
             var init_expr: ?*Expr = null;
+            errdefer if (init_expr) |s| s.free(self.alloc);
+
             if (self.match_next(.Equal)) {
                 self.curr += 1;
                 init_expr = try self.expression();
@@ -375,14 +477,17 @@ pub const Parser = struct {
             self.curr += 1;
 
             var condition = try self.expression();
+            errdefer condition.free(self.alloc);
 
             if (!self.match_next(.LeftBrace)) {
                 return error.ExpectedLeftBrace;
             }
             self.curr += 1;
+
             var stmts = try self.block();
             var if_block = try self.alloc.create(Stmt);
             if_block.* = .{ .Block = stmts };
+            errdefer if_block.free(self.alloc);
 
             var stmt = try self.alloc.create(Stmt);
             errdefer self.alloc.destroy(stmt);
@@ -412,6 +517,7 @@ pub const Parser = struct {
             self.curr += 1;
 
             var condition = try self.expression();
+            errdefer condition.free(self.alloc);
 
             if (!self.match_next(.LeftBrace)) {
                 return error.ExpectedLeftBrace;
@@ -429,6 +535,8 @@ pub const Parser = struct {
             self.curr += 1;
 
             var start: ?*Stmt = null;
+            errdefer if (start) |s| s.free(self.alloc);
+
             if (self.match_next(.Let)) {
                 self.curr += 1;
 
@@ -440,6 +548,8 @@ pub const Parser = struct {
             }
 
             var mid: ?*Expr = null;
+            errdefer if (mid) |s| s.free(self.alloc);
+
             if (self.match_next(.Semicolon)) {
                 self.curr += 1;
             } else {
@@ -452,6 +562,8 @@ pub const Parser = struct {
             }
 
             var end: ?*Stmt = null;
+            errdefer if (end) |s| s.free(self.alloc);
+
             if (self.match_next(.Semicolon)) {
                 self.curr += 1;
             } else {
@@ -494,6 +606,8 @@ pub const Parser = struct {
             self.curr += 1;
 
             var expr: ?*Expr = null;
+            errdefer if (expr) |s| s.free(self.alloc);
+
             if (!self.match_next(.Semicolon)) {
                 expr = try self.expression();
             }
@@ -513,6 +627,13 @@ pub const Parser = struct {
 
     fn block(self: *Self) ![]*Stmt {
         var stmts = std.ArrayList(*Stmt).init(self.alloc);
+        errdefer {
+            for (stmts.items) |stmt| {
+                stmt.free(self.alloc);
+            }
+            stmts.deinit();
+        }
+
         while (!self.match_any(&[_]TokenType{ .RightBrace, .Eof })) {
             try stmts.append(try self.declaration());
         }
@@ -526,6 +647,8 @@ pub const Parser = struct {
 
     fn print_stmt(self: *Self) !*Stmt {
         var val = try self.expression();
+        errdefer val.free(self.alloc);
+
         if (!self.match_next(.Semicolon)) {
             return error.ExpectedSemicolon;
         }
@@ -552,6 +675,7 @@ pub const Parser = struct {
 
     fn logic_or(self: *Self) anyerror!*Expr {
         var expr = try self.logic_and();
+        errdefer expr.free(self.alloc);
 
         while (self.match_next(.Or)) {
             var operator = self.tokens[self.curr];
@@ -568,6 +692,7 @@ pub const Parser = struct {
 
     fn logic_and(self: *Self) anyerror!*Expr {
         var expr = try self.equality();
+        errdefer expr.free(self.alloc);
 
         while (self.match_next(.And)) {
             var operator = self.tokens[self.curr];
@@ -584,6 +709,8 @@ pub const Parser = struct {
 
     fn equality(self: *Self) !*Expr {
         var left = try self.comparison();
+        errdefer left.free(self.alloc);
+
         while (self.match_any(&[_]TokenType{ .BangEqual, .DoubleEqual })) {
             var operator = self.tokens[self.curr];
 
@@ -601,6 +728,7 @@ pub const Parser = struct {
 
     fn comparison(self: *Self) !*Expr {
         var left = try self.term();
+        errdefer left.free(self.alloc);
 
         while (self.match_any(&[_]TokenType{ .Gt, .Gte, .Lt, .Lte })) {
             var operator = self.tokens[self.curr];
@@ -620,6 +748,7 @@ pub const Parser = struct {
     fn term(self: *Self) !*Expr {
         var expr = try self.factor();
         // std.debug.print("expr term {any} {} {any}\n", .{ expr, self.match_any(&[_]TokenType{ .Dash, .Plus }), self.tokens[self.curr] });
+        errdefer expr.free(self.alloc);
 
         while (self.match_any(&[_]TokenType{ .Dash, .Plus })) {
             var operator = self.tokens[self.curr];
@@ -639,6 +768,7 @@ pub const Parser = struct {
 
     fn factor(self: *Self) !*Expr {
         var expr = try self.unary();
+        errdefer expr.free(self.alloc);
 
         while (self.match_any(&[_]TokenType{ .Slash, .Star })) {
             var operator = self.tokens[self.curr];
@@ -673,6 +803,7 @@ pub const Parser = struct {
 
     fn call(self: *Self) !*Expr {
         var expr = try self.primary();
+        errdefer expr.free(self.alloc);
 
         while (true) {
             if (self.match_next(.LeftParen)) {
@@ -685,10 +816,7 @@ pub const Parser = struct {
                 if (!self.match_next(.{ .Identifier = "" })) {
                     return error.ExpectedIdentifier;
                 }
-                var name = switch (self.tokens[self.curr].tok) {
-                    .Identifier => |n| n,
-                    else => unreachable,
-                };
+                var name = self.tokens[self.curr].tok.Identifier;
                 self.curr += 1;
 
                 var e = .{ .Get = .{ .name = name, .object = expr } };
@@ -704,7 +832,12 @@ pub const Parser = struct {
 
     fn finish_call(self: *Self, callee: *Expr) !*Expr {
         var args = std.ArrayList(*Expr).init(self.alloc);
-        errdefer args.deinit();
+        errdefer {
+            for (args.items) |arg| {
+                arg.free(self.alloc);
+            }
+            args.deinit();
+        }
 
         if (!self.match_next(.RightParen)) {
             while (true) {
@@ -742,7 +875,6 @@ pub const Parser = struct {
         self.curr += 1;
 
         var expr = try self.alloc.create(Expr);
-        errdefer self.alloc.destroy(expr);
 
         switch (tok.tok) {
             .False => expr.* = .{ .Literal = .False },
@@ -751,7 +883,10 @@ pub const Parser = struct {
             .Number => |num| expr.* = .{ .Literal = .{ .Number = num } },
             .String => |str| expr.* = .{ .Literal = .{ .String = str } },
             .LeftParen => {
+                self.alloc.destroy(expr);
                 expr = try self.expression();
+                errdefer expr.free(self.alloc);
+
                 if (self.tokens[self.curr].tok == .RightParen) {
                     self.curr += 1;
                 } else {
@@ -765,6 +900,8 @@ pub const Parser = struct {
             .Identifier => |name| expr.* = .{ .Variable = name },
             .Self => expr.* = .{ .Self = tok },
             .Super => {
+                errdefer self.alloc.destroy(expr);
+
                 if (!self.match_next(.Dot)) {
                     return error.ExpectedDot;
                 }
@@ -772,15 +909,14 @@ pub const Parser = struct {
                 if (!self.match_next(.{ .Identifier = "" })) {
                     return error.ExpectedIdentifier;
                 }
-                var method = switch (self.tokens[self.curr].tok) {
-                    .Identifier => |name| name,
-                    else => unreachable,
-                };
+                var method = self.tokens[self.curr].tok.Identifier;
                 self.curr += 1;
 
                 expr.* = .{ .Super = .{ .keyword = tok, .method = method } };
             },
             else => {
+                errdefer self.alloc.destroy(expr);
+
                 self.warn(tok, "expected primary expression");
                 return error.ExpectedPrimaryExpression;
             },
@@ -845,4 +981,3 @@ pub const Parser = struct {
 // fnDecl         → "fn" function ;
 // function       → IDENTIFIER "(" parameters? ")" block ;
 // classDecl      → "class" IDENTIFIER ( "<" IDENTIFIER )? "{" function* "}" ;
-

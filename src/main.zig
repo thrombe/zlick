@@ -151,7 +151,7 @@ const Zlick = struct {
         var temp = std.ArrayList(*Stmt).init(alloc);
         defer {
             for (temp.items) |s| {
-                interpreter.freeall_stmt(s);
+                s.free(alloc);
             }
             temp.deinit();
         }
