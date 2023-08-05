@@ -23,7 +23,7 @@ pub fn main() !void {
     var lig = Zlick.new();
 
     if (args.len > 2) {
-        try stdout.print("lokx [script]\n", .{});
+        try stdout.print("zlick [script]\n", .{});
     } else if (args.len == 2) {
         try lig.run_file(args[1]);
     } else {
